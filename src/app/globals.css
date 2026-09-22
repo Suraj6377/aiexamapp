@@ -1,0 +1,141 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --background: 255 255 255;
+    --foreground: 15 23 42;
+  }
+  .dark {
+    --background: 2 6 23;
+    --foreground: 248 250 252;
+  }
+  .artistic {
+    --background: 251 247 238;
+    --foreground: 28 25 23;
+  }
+}
+
+/* Artistic Study Theme (Scholarly Parchment & Antique Amber) */
+html.artistic {
+  background-color: #fbf7ee;
+  color: #1c1917;
+}
+
+html.artistic body {
+  background-color: #fbf7ee;
+  color: #1c1917;
+}
+
+html.artistic .bg-white {
+  background-color: #fffdf8;
+}
+
+html.artistic .bg-slate-50,
+html.artistic .bg-slate-100 {
+  background-color: #f5ede0;
+}
+
+html.artistic .border-slate-100,
+html.artistic .border-slate-200 {
+  border-color: #e8ded1;
+}
+
+html.artistic .text-slate-900,
+html.artistic .text-slate-800 {
+  color: #1c1917;
+}
+
+html.artistic .text-slate-700,
+html.artistic .text-slate-600 {
+  color: #44403c;
+}
+
+html.artistic .text-slate-500,
+html.artistic .text-slate-400 {
+  color: #78716c;
+}
+
+html.artistic .bg-indigo-600 {
+  background-color: #b45309;
+}
+
+html.artistic .hover\:bg-indigo-500:hover {
+  background-color: #92400e;
+}
+
+html.artistic .bg-indigo-50 {
+  background-color: #fef3c7;
+}
+
+html.artistic .text-indigo-600,
+html.artistic .text-indigo-700 {
+  color: #b45309;
+}
+
+html.artistic .border-indigo-100,
+html.artistic .border-indigo-200 {
+  border-color: #fde68a;
+}
+
+html.artistic .border-indigo-500 {
+  border-color: #b45309;
+}
+
+html.artistic .focus\:ring-indigo-500:focus {
+  --tw-ring-color: #d97706;
+}
+
+html.artistic ::-webkit-scrollbar-thumb {
+  background: rgba(180, 83, 9, 0.3);
+}
+
+html.artistic ::-webkit-scrollbar-thumb:hover {
+  background: rgba(180, 83, 9, 0.55);
+}
+
+html, body {
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
+/* Mobile Touch & Scroll Optimizations */
+* {
+  touch-action: manipulation;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(156, 163, 175, 0.4);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(156, 163, 175, 0.7);
+}
+
+/* Mobile responsive paper sheet scaling container */
+.paper-viewport-container {
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Print optimizations */
+@media print {
+  @page {
+    margin: 15mm;
+  }
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+  .no-print, aside, header, nav, button {
+    display: none !important;
+  }
+}
