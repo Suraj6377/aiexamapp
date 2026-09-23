@@ -80,8 +80,8 @@ export function DocumentUploader({ onDocumentProcessed }: DocumentUploaderProps)
       return;
     }
 
-    if (file.size > 25 * 1024 * 1024) {
-      error("File size exceeds 25 MB limit.", "File Too Large");
+    if (file.size > 4.5 * 1024 * 1024) {
+      error("File size exceeds 4.5 MB limit for serverless direct upload. Please upload a smaller file or paste text directly.", "File Too Large");
       return;
     }
 
@@ -92,46 +92,31 @@ export function DocumentUploader({ onDocumentProcessed }: DocumentUploaderProps)
   const processFile = async (file: File) => {
     setIsProcessing(true);
     setCurrentStep("uploading");
-    setProgressPercent(15);
+    setProgressPercent(20);
+
+    const isImage = file.type.startsWith("image/");
+    const endpoint = isImage ? "/api/documents/ocr" : "/api/documents/parse";
+
+    const timeouts: NodeJS.Timeout[] = [];
+    timeouts.push(setTimeout(() => { setCurrentStep("reading"); setProgressPercent(40); }, 600));
+    if (isImage) {
+      timeouts.push(setTimeout(() => { setCurrentStep("ocr"); setProgressPercent(65); }, 1200));
+    } else {
+      timeouts.push(setTimeout(() => { setCurrentStep("extracting"); setProgressPercent(60); }, 1000));
+      timeouts.push(setTimeout(() => { setCurrentStep("chapters"); setProgressPercent(80); }, 1800));
+    }
 
     try {
       const formData = new FormData();
       formData.append("file", file);
 
-      setTimeout(() => {
-        setCurrentStep("reading");
-        setProgressPercent(35);
-      }, 500);
-
-      const isImage = file.type.startsWith("image/");
-      const endpoint = isImage ? "/api/documents/ocr" : "/api/documents/parse";
-
-      if (isImage) {
-        setTimeout(() => {
-          setCurrentStep("ocr");
-          setProgressPercent(55);
-        }, 1000);
-      } else {
-        setTimeout(() => {
-          setCurrentStep("extracting");
-          setProgressPercent(60);
-        }, 900);
-      }
-
-      setTimeout(() => {
-        setCurrentStep("chapters");
-        setProgressPercent(80);
-      }, 1500);
-
-      setTimeout(() => {
-        setCurrentStep("topics");
-        setProgressPercent(95);
-      }, 2000);
-
       const res = await fetch(endpoint, {
         method: "POST",
         body: formData,
       });
+
+      // Clear all speculative step timeouts
+      timeouts.forEach(clearTimeout);
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
@@ -148,9 +133,12 @@ export function DocumentUploader({ onDocumentProcessed }: DocumentUploaderProps)
       setDocumentMetadata(data.document);
       success("Document analyzed and grounded topics detected!", "Analysis Complete");
     } catch (err: any) {
+      timeouts.forEach(clearTimeout);
       console.error("Document processing error:", err);
       setCurrentStep("idle");
       setProgressPercent(0);
+      setSelectedFile(null);
+      setDocumentMetadata(null);
       error(err.message || "Failed to process document", "Processing Error");
     } finally {
       setIsProcessing(false);

@@ -1,6 +1,9 @@
+import { safeLogger } from "../logger";
+
 /**
  * PDF text extraction service.
  * Uses pdf-parse to extract raw text content, page counts, and metadata from PDF files.
+ * Does NOT return mock or placeholder strings as actual document content.
  */
 export async function parsePdfBuffer(buffer: Buffer): Promise<{ text: string; pageCount: number }> {
   try {
@@ -8,18 +11,31 @@ export async function parsePdfBuffer(buffer: Buffer): Promise<{ text: string; pa
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const pdfParse = require("pdf-parse");
     const data = await pdfParse(buffer);
+
+    const extractedText = (data.text || "").trim();
+    if (!extractedText || extractedText.length < 20) {
+      // Check if visible unicode/ASCII characters exist
+      const str = buffer.toString("utf8");
+      const fallbackExtracted = str.replace(/[^\x20-\x7E\t\n\r\u0900-\u097F]/g, " ").replace(/\s+/g, " ").trim();
+      if (fallbackExtracted.length > 100) {
+        return {
+          text: fallbackExtracted,
+          pageCount: data.numpages || 1,
+        };
+      }
+
+      throw new Error(
+        "No digital text found in this PDF. It appears to be a scanned document or image-only PDF. Please upload pages as image files (PNG/JPG) to perform Optical Character Recognition (OCR)."
+      );
+    }
+
     return {
-      text: data.text || "",
+      text: extractedText,
       pageCount: data.numpages || 1,
     };
-  } catch (error: any) {
-    console.warn("pdf-parse encountered an error, falling back to text extractor:", error);
-    // Fallback: extract visible ASCII/UTF8 strings if pdf-parse fails on edge case
-    const str = buffer.toString("utf8");
-    const extracted = str.replace(/[^\x20-\x7E\t\n\r\u0900-\u097F]/g, " ").replace(/\s+/g, " ");
-    return {
-      text: extracted.length > 50 ? extracted : "Unable to extract text from this PDF file directly. Please check if it is scanned or password protected.",
-      pageCount: 1,
-    };
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    safeLogger.warn("PDFParser", `PDF extraction error: ${msg}`);
+    throw error;
   }
 }

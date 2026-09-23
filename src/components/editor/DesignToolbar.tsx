@@ -70,7 +70,7 @@ export function DesignToolbar({
 
   const handlePrintPdf = () => {
     try {
-      info("Preparing print rendering layout...", "PDF Export");
+      info("Opening print dialog. Select 'Save as PDF' in the destination to export as PDF.", "Print / PDF Export");
       triggerPaperPrint(paper);
     } catch (err: any) {
       error("Failed to generate PDF print preview");
@@ -272,11 +272,11 @@ export function DesignToolbar({
           type="button"
           onClick={handlePrintPdf}
           className="flex items-center gap-1.5 px-3 sm:px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white text-xs font-bold shadow-md shadow-indigo-500/20 transition active:scale-95 min-h-[36px]"
-          title="Export PDF / Print"
+          title="Print or Save as PDF using browser print dialog"
         >
           <Printer className="w-3.5 h-3.5" />
-          <span className="hidden sm:inline">Print / PDF</span>
-          <span className="sm:hidden text-[11px]">PDF</span>
+          <span className="hidden sm:inline">Print / Save as PDF</span>
+          <span className="sm:hidden text-[11px]">Print / PDF</span>
         </button>
       </div>
 

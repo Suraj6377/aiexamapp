@@ -1,80 +1,11 @@
 import { AIProviderConfig, ExamTemplate, QuestionPaper } from "@/types/paper";
 import { DEFAULT_TEMPLATES } from "./templates/defaultTemplates";
+import { safeLogger } from "./logger";
 import fs from "fs";
 import path from "path";
 import os from "os";
 
-// Determine a safe writable storage directory:
-// 1. Try local `./data` (standard local development)
-// 2. If `./data` cannot be written to or is read-only (e.g. Vercel, Netlify, AWS Lambda), fallback to `os.tmpdir()/ai_study_data`
-function getSafeDataDir(): string {
-  if (typeof window !== "undefined") return "";
-
-  // 1. Try local ./data first
-  try {
-    const localDir = path.join(process.cwd(), "data");
-    if (!fs.existsSync(localDir)) {
-      fs.mkdirSync(localDir, { recursive: true });
-    }
-    const testFile = path.join(localDir, `.write_test_${Date.now()}`);
-    fs.writeFileSync(testFile, "ok", "utf8");
-    fs.unlinkSync(testFile);
-    return localDir;
-  } catch {
-    // Read-only filesystem (Vercel, Netlify, Lambda)
-    try {
-      const tmpDir = path.join(os.tmpdir(), "ai_study_data");
-      if (!fs.existsSync(tmpDir)) {
-        fs.mkdirSync(tmpDir, { recursive: true });
-      }
-      return tmpDir;
-    } catch {
-      return os.tmpdir();
-    }
-  }
-}
-
-let activeDataDir: string | null = null;
-function getDataDir(): string {
-  if (!activeDataDir) {
-    activeDataDir = getSafeDataDir();
-  }
-  return activeDataDir;
-}
-
-function getFilePath(filename: string): string {
-  const dir = getDataDir();
-  return dir ? path.join(/*turbopackIgnore: true*/ dir, filename) : "";
-}
-
-function safeReadFile(filename: string): string | null {
-  try {
-    const p = getFilePath(filename);
-    if (p && fs.existsSync(p)) {
-      return fs.readFileSync(p, "utf8");
-    }
-  } catch {}
-  return null;
-}
-
-function safeWriteFile(filename: string, content: string): boolean {
-  try {
-    const p = getFilePath(filename);
-    if (p) {
-      fs.writeFileSync(p, content, "utf8");
-      return true;
-    }
-  } catch {
-    try {
-      const fallbackPath = path.join(os.tmpdir(), filename);
-      fs.writeFileSync(fallbackPath, content, "utf8");
-      return true;
-    } catch {}
-  }
-  return false;
-}
-
-// Initial Sample Papers for immediate out-of-the-box exploration
+// Baseline Seed Paper
 const SEED_PAPERS: QuestionPaper[] = [
   {
     id: "paper_cbse_phy_2026",
@@ -212,6 +143,7 @@ const SEED_PAPERS: QuestionPaper[] = [
   },
 ];
 
+// Baseline AI Configurations
 const DEFAULT_AI_CONFIGS: AIProviderConfig[] = [
   {
     id: "cfg_gemini",
@@ -271,244 +203,419 @@ const DEFAULT_AI_CONFIGS: AIProviderConfig[] = [
   },
 ];
 
-// In-memory cache for fast local responses and serverless resilience
-let cachedPapers: QuestionPaper[] | null = null;
-let cachedTemplates: ExamTemplate[] | null = null;
-let cachedConfigs: AIProviderConfig[] | null = null;
-
-export const StorageService = {
-  // Papers
-  getPapers(): QuestionPaper[] {
-    if (typeof window !== "undefined") {
-      try {
-        const local = localStorage.getItem("ai_study_papers");
-        if (local) {
-          const parsed = JSON.parse(local);
-          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-        }
-      } catch {}
-      return SEED_PAPERS;
+function getEnvAIConfigs(): AIProviderConfig[] {
+  return DEFAULT_AI_CONFIGS.map((cfg) => {
+    let key = cfg.apiKey;
+    if (!key) {
+      if (cfg.provider === "gemini") key = process.env.GEMINI_API_KEY || "";
+      if (cfg.provider === "openai") key = process.env.OPENAI_API_KEY || "";
+      if (cfg.provider === "anthropic") key = process.env.ANTHROPIC_API_KEY || "";
+      if (cfg.provider === "groq") key = process.env.GROQ_API_KEY || "";
+      if (cfg.provider === "openrouter") key = process.env.OPENROUTER_API_KEY || "";
     }
+    return { ...cfg, apiKey: key };
+  });
+}
 
-    if (cachedPapers && cachedPapers.length > 0) return cachedPapers;
+/**
+ * Storage Driver Interface
+ */
+export interface IStorageDriver {
+  name: string;
+  getPapers(): Promise<QuestionPaper[]>;
+  getPaperById(id: string): Promise<QuestionPaper | null>;
+  savePaper(paper: QuestionPaper): Promise<void>;
+  deletePaper(id: string): Promise<boolean>;
 
-    const raw = safeReadFile("papers.json");
+  getTemplates(): Promise<ExamTemplate[]>;
+  saveTemplate(template: ExamTemplate): Promise<void>;
+  deleteTemplate(id: string): Promise<boolean>;
+
+  getAIConfigs(): Promise<AIProviderConfig[]>;
+  saveAIConfig(config: AIProviderConfig): Promise<void>;
+}
+
+/**
+ * Driver 1: Vercel KV / Upstash Redis REST
+ * Uses pure HTTP REST fetch over HTTPS with zero native dependencies.
+ * Activated if KV_REST_API_URL or UPSTASH_REDIS_REST_URL is configured.
+ */
+class UpstashKvDriver implements IStorageDriver {
+  name = "Vercel KV / Upstash Redis REST";
+  private url: string;
+  private token: string;
+
+  constructor(url: string, token: string) {
+    this.url = url.replace(/\/+$/, "");
+    this.token = token;
+  }
+
+  private async command(cmd: any[]): Promise<any> {
+    try {
+      const res = await fetch(this.url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.token}`,
+        },
+        body: JSON.stringify(cmd),
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+      const json = await res.json();
+      return json.result;
+    } catch (err: any) {
+      safeLogger.error("StorageDriver:UpstashKV", `Command [${cmd[0]}] failed: ${err.message}`);
+      throw err;
+    }
+  }
+
+  async getPapers(): Promise<QuestionPaper[]> {
+    try {
+      const result = await this.command(["HVALS", "aiexam:papers"]);
+      if (Array.isArray(result) && result.length > 0) {
+        const papers = result.map((item) => (typeof item === "string" ? JSON.parse(item) : item));
+        return papers;
+      }
+    } catch (err: any) {
+      safeLogger.warn("StorageDriver:UpstashKV", `getPapers error: ${err.message}`);
+    }
+    return SEED_PAPERS;
+  }
+
+  async getPaperById(id: string): Promise<QuestionPaper | null> {
+    try {
+      const result = await this.command(["HGET", "aiexam:papers", id]);
+      if (result) {
+        return typeof result === "string" ? JSON.parse(result) : result;
+      }
+    } catch (err: any) {
+      safeLogger.warn("StorageDriver:UpstashKV", `getPaperById error: ${err.message}`);
+    }
+    return SEED_PAPERS.find((p) => p.id === id) || null;
+  }
+
+  async savePaper(paper: QuestionPaper): Promise<void> {
+    const updatedPaper = { ...paper, updatedAt: new Date().toISOString() };
+    await this.command(["HSET", "aiexam:papers", paper.id, JSON.stringify(updatedPaper)]);
+    safeLogger.info("StorageDriver:UpstashKV", `Saved paper ${paper.id}`);
+  }
+
+  async deletePaper(id: string): Promise<boolean> {
+    const count = await this.command(["HDEL", "aiexam:papers", id]);
+    return Number(count) > 0;
+  }
+
+  async getTemplates(): Promise<ExamTemplate[]> {
+    try {
+      const raw = await this.command(["GET", "aiexam:templates"]);
+      if (raw) {
+        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const ids = new Set(parsed.map((t: any) => t.id));
+          const missingDefaults = DEFAULT_TEMPLATES.filter((dt) => !ids.has(dt.id));
+          return [...parsed, ...missingDefaults];
+        }
+      }
+    } catch (err: any) {
+      safeLogger.warn("StorageDriver:UpstashKV", `getTemplates error: ${err.message}`);
+    }
+    return DEFAULT_TEMPLATES;
+  }
+
+  async saveTemplate(template: ExamTemplate): Promise<void> {
+    const current = await this.getTemplates();
+    const idx = current.findIndex((t) => t.id === template.id);
+    if (idx >= 0) {
+      current[idx] = template;
+    } else {
+      current.push(template);
+    }
+    await this.command(["SET", "aiexam:templates", JSON.stringify(current)]);
+    safeLogger.info("StorageDriver:UpstashKV", `Saved template ${template.id}`);
+  }
+
+  async deleteTemplate(id: string): Promise<boolean> {
+    const current = await this.getTemplates();
+    const filtered = current.filter((t) => t.id !== id);
+    if (filtered.length < current.length) {
+      await this.command(["SET", "aiexam:templates", JSON.stringify(filtered)]);
+      return true;
+    }
+    return false;
+  }
+
+  async getAIConfigs(): Promise<AIProviderConfig[]> {
+    const envDefaults = getEnvAIConfigs();
+    try {
+      const raw = await this.command(["GET", "aiexam:ai_configs"]);
+      if (raw) {
+        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((c: AIProviderConfig) => {
+            if (!c.apiKey) {
+              const def = envDefaults.find((d) => d.id === c.id || d.provider === c.provider);
+              if (def?.apiKey) return { ...c, apiKey: def.apiKey };
+            }
+            return c;
+          });
+        }
+      }
+    } catch (err: any) {
+      safeLogger.warn("StorageDriver:UpstashKV", `getAIConfigs error: ${err.message}`);
+    }
+    return envDefaults;
+  }
+
+  async saveAIConfig(config: AIProviderConfig): Promise<void> {
+    const current = await this.getAIConfigs();
+    const idx = current.findIndex((c) => c.id === config.id);
+    if (idx >= 0) {
+      current[idx] = config;
+    } else {
+      current.push(config);
+    }
+    await this.command(["SET", "aiexam:ai_configs", JSON.stringify(current)]);
+    safeLogger.info("StorageDriver:UpstashKV", `Saved AI config ${config.id} (${config.name})`);
+  }
+}
+
+/**
+ * Driver 2: Local & Ephemeral Fallback
+ * Used in local development or when external database variables are not set.
+ * Uses safe try-catch on disk and in-memory cache to guarantee zero crashes on Vercel.
+ */
+class LocalFallbackDriver implements IStorageDriver {
+  name = "Local / Serverless Memory & Temp Storage";
+  private papers: QuestionPaper[] = [...SEED_PAPERS];
+  private templates: ExamTemplate[] = [...DEFAULT_TEMPLATES];
+  private aiConfigs: AIProviderConfig[] = getEnvAIConfigs();
+  private dataDir: string | null = null;
+
+  constructor() {
+    this.initDataDir();
+  }
+
+  private initDataDir() {
+    if (typeof window !== "undefined") return;
+    try {
+      const localDir = path.join(process.cwd(), "data");
+      if (!fs.existsSync(localDir)) {
+        fs.mkdirSync(localDir, { recursive: true });
+      }
+      const test = path.join(localDir, `.write_test_${Date.now()}`);
+      fs.writeFileSync(test, "ok", "utf8");
+      fs.unlinkSync(test);
+      this.dataDir = localDir;
+    } catch {
+      try {
+        const tmp = path.join(os.tmpdir(), "ai_study_data");
+        if (!fs.existsSync(tmp)) {
+          fs.mkdirSync(tmp, { recursive: true });
+        }
+        this.dataDir = tmp;
+      } catch {
+        this.dataDir = os.tmpdir();
+      }
+    }
+  }
+
+  private safeRead(filename: string): string | null {
+    if (!this.dataDir) return null;
+    try {
+      const p = path.join(/*turbopackIgnore: true*/ this.dataDir, filename);
+      if (fs.existsSync(p)) return fs.readFileSync(p, "utf8");
+    } catch {}
+    return null;
+  }
+
+  private safeWrite(filename: string, content: string): void {
+    if (!this.dataDir) return;
+    try {
+      const p = path.join(/*turbopackIgnore: true*/ this.dataDir, filename);
+      fs.writeFileSync(p, content, "utf8");
+    } catch {}
+  }
+
+  async getPapers(): Promise<QuestionPaper[]> {
+    const raw = this.safeRead("papers.json");
     if (raw) {
       try {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          cachedPapers = parsed;
-          return cachedPapers;
+          this.papers = parsed;
+          return this.papers;
         }
       } catch {}
     }
+    return this.papers;
+  }
 
-    cachedPapers = [...SEED_PAPERS];
-    safeWriteFile("papers.json", JSON.stringify(cachedPapers, null, 2));
-    return cachedPapers;
-  },
-
-  getPaperById(id: string): QuestionPaper | null {
-    const papers = this.getPapers();
+  async getPaperById(id: string): Promise<QuestionPaper | null> {
+    const papers = await this.getPapers();
     return papers.find((p) => p.id === id) || null;
-  },
+  }
 
-  savePaper(paper: QuestionPaper): void {
-    const papers = this.getPapers();
-    const index = papers.findIndex((p) => p.id === paper.id);
-    if (index >= 0) {
-      papers[index] = { ...paper, updatedAt: new Date().toISOString() };
+  async savePaper(paper: QuestionPaper): Promise<void> {
+    const papers = await this.getPapers();
+    const idx = papers.findIndex((p) => p.id === paper.id);
+    const updated = { ...paper, updatedAt: new Date().toISOString() };
+    if (idx >= 0) {
+      papers[idx] = updated;
     } else {
-      papers.unshift({ ...paper, updatedAt: new Date().toISOString() });
+      papers.unshift(updated);
     }
+    this.papers = papers;
+    this.safeWrite("papers.json", JSON.stringify(papers, null, 2));
+  }
 
-    cachedPapers = papers;
-
-    if (typeof window !== "undefined") {
-      try {
-        localStorage.setItem("ai_study_papers", JSON.stringify(papers));
-      } catch {}
-    } else {
-      safeWriteFile("papers.json", JSON.stringify(papers, null, 2));
-    }
-  },
-
-  deletePaper(id: string): boolean {
-    let papers = this.getPapers();
+  async deletePaper(id: string): Promise<boolean> {
+    const papers = await this.getPapers();
     const initialLen = papers.length;
-    papers = papers.filter((p) => p.id !== id);
-    cachedPapers = papers;
+    this.papers = papers.filter((p) => p.id !== id);
+    this.safeWrite("papers.json", JSON.stringify(this.papers, null, 2));
+    return this.papers.length < initialLen;
+  }
 
-    if (typeof window !== "undefined") {
-      try {
-        localStorage.setItem("ai_study_papers", JSON.stringify(papers));
-      } catch {}
-    } else {
-      safeWriteFile("papers.json", JSON.stringify(papers, null, 2));
-    }
-    return papers.length < initialLen;
-  },
-
-  // Templates
-  getTemplates(): ExamTemplate[] {
-    if (typeof window !== "undefined") {
-      try {
-        const local = localStorage.getItem("ai_study_templates");
-        if (local) {
-          const parsed = JSON.parse(local);
-          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-        }
-      } catch {}
-      return DEFAULT_TEMPLATES;
-    }
-
-    if (cachedTemplates && cachedTemplates.length > 0) return cachedTemplates;
-
-    const raw = safeReadFile("templates.json");
+  async getTemplates(): Promise<ExamTemplate[]> {
+    const raw = this.safeRead("templates.json");
     if (raw) {
       try {
-        const parsed: ExamTemplate[] = JSON.parse(raw);
+        const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          // Merge with DEFAULT_TEMPLATES so built-in templates are never missing
-          const existingIds = new Set(parsed.map((t) => t.id));
-          const missingDefaults = DEFAULT_TEMPLATES.filter((dt) => !existingIds.has(dt.id));
-          cachedTemplates = [...parsed, ...missingDefaults];
-          return cachedTemplates;
+          const ids = new Set(parsed.map((t: any) => t.id));
+          const missingDefaults = DEFAULT_TEMPLATES.filter((dt) => !ids.has(dt.id));
+          this.templates = [...parsed, ...missingDefaults];
+          return this.templates;
         }
       } catch {}
     }
+    return this.templates;
+  }
 
-    cachedTemplates = [...DEFAULT_TEMPLATES];
-    safeWriteFile("templates.json", JSON.stringify(DEFAULT_TEMPLATES, null, 2));
-    return cachedTemplates;
-  },
-
-  saveTemplate(template: ExamTemplate): void {
-    const templates = this.getTemplates();
+  async saveTemplate(template: ExamTemplate): Promise<void> {
+    const templates = await this.getTemplates();
     const idx = templates.findIndex((t) => t.id === template.id);
     if (idx >= 0) {
       templates[idx] = template;
     } else {
       templates.push(template);
     }
+    this.templates = templates;
+    this.safeWrite("templates.json", JSON.stringify(templates, null, 2));
+  }
 
-    cachedTemplates = templates;
-
-    if (typeof window !== "undefined") {
-      try {
-        localStorage.setItem("ai_study_templates", JSON.stringify(templates));
-      } catch {}
-    } else {
-      safeWriteFile("templates.json", JSON.stringify(templates, null, 2));
-    }
-  },
-
-  deleteTemplate(id: string): boolean {
-    let templates = this.getTemplates();
+  async deleteTemplate(id: string): Promise<boolean> {
+    const templates = await this.getTemplates();
     const initialLen = templates.length;
-    templates = templates.filter((t) => t.id !== id);
-    cachedTemplates = templates;
+    this.templates = templates.filter((t) => t.id !== id);
+    this.safeWrite("templates.json", JSON.stringify(this.templates, null, 2));
+    return this.templates.length < initialLen;
+  }
 
-    if (typeof window !== "undefined") {
-      try {
-        localStorage.setItem("ai_study_templates", JSON.stringify(templates));
-      } catch {}
-    } else {
-      safeWriteFile("templates.json", JSON.stringify(templates, null, 2));
-    }
-    return templates.length < initialLen;
-  },
-
-  // AI Configurations
-  getAIConfigs(): AIProviderConfig[] {
-    const envDefaults = DEFAULT_AI_CONFIGS.map((cfg) => {
-      let key = cfg.apiKey;
-      if (!key) {
-        if (cfg.provider === "gemini") key = process.env.GEMINI_API_KEY || "";
-        if (cfg.provider === "openai") key = process.env.OPENAI_API_KEY || "";
-        if (cfg.provider === "anthropic") key = process.env.ANTHROPIC_API_KEY || "";
-        if (cfg.provider === "groq") key = process.env.GROQ_API_KEY || "";
-        if (cfg.provider === "openrouter") key = process.env.OPENROUTER_API_KEY || "";
-      }
-      return { ...cfg, apiKey: key };
-    });
-
-    if (typeof window !== "undefined") {
-      try {
-        const local = localStorage.getItem("ai_study_configs");
-        if (local) {
-          const parsed: AIProviderConfig[] = JSON.parse(local);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            // Ensure OpenRouter is present
-            if (!parsed.some((c) => c.provider === "openrouter")) {
-              const def = envDefaults.find((d) => d.provider === "openrouter");
-              if (def) parsed.push(def);
-            }
-            return parsed;
-          }
-        }
-      } catch {}
-      return envDefaults;
-    }
-
-    if (cachedConfigs && cachedConfigs.length > 0) {
-      // Augment with env variables if any config lacks a key
-      return cachedConfigs.map((c) => {
-        if (!c.apiKey) {
-          const matchingDef = envDefaults.find((d) => d.id === c.id || d.provider === c.provider);
-          if (matchingDef && matchingDef.apiKey) {
-            return { ...c, apiKey: matchingDef.apiKey };
-          }
-        }
-        return c;
-      });
-    }
-
-    const raw = safeReadFile("ai_config.json");
+  async getAIConfigs(): Promise<AIProviderConfig[]> {
+    const envDefaults = getEnvAIConfigs();
+    const raw = this.safeRead("ai_config.json");
     if (raw) {
       try {
-        const parsed: AIProviderConfig[] = JSON.parse(raw);
+        const parsed = JSON.parse(raw);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          if (!parsed.some((c) => c.provider === "openrouter")) {
-            const def = envDefaults.find((d) => d.provider === "openrouter");
-            if (def) parsed.push(def);
-          }
-          cachedConfigs = parsed.map((c) => {
+          this.aiConfigs = parsed.map((c: AIProviderConfig) => {
             if (!c.apiKey) {
-              const matchingDef = envDefaults.find((d) => d.id === c.id || d.provider === c.provider);
-              if (matchingDef && matchingDef.apiKey) {
-                return { ...c, apiKey: matchingDef.apiKey };
-              }
+              const def = envDefaults.find((d) => d.id === c.id || d.provider === c.provider);
+              if (def?.apiKey) return { ...c, apiKey: def.apiKey };
             }
             return c;
           });
-          return cachedConfigs;
+          return this.aiConfigs;
         }
       } catch {}
     }
+    this.aiConfigs = envDefaults;
+    return this.aiConfigs;
+  }
 
-    cachedConfigs = [...envDefaults];
-    safeWriteFile("ai_config.json", JSON.stringify(envDefaults, null, 2));
-    return cachedConfigs;
-  },
-
-  saveAIConfig(config: AIProviderConfig): void {
-    const configs = this.getAIConfigs();
+  async saveAIConfig(config: AIProviderConfig): Promise<void> {
+    const configs = await this.getAIConfigs();
     const idx = configs.findIndex((c) => c.id === config.id);
     if (idx >= 0) {
       configs[idx] = config;
     } else {
       configs.push(config);
     }
+    this.aiConfigs = configs;
+    this.safeWrite("ai_config.json", JSON.stringify(configs, null, 2));
+  }
+}
 
-    cachedConfigs = configs;
+/**
+ * Storage Service Factory
+ * Selects the optimal production driver dynamically based on environment variables:
+ * 1. Upstash Redis / Vercel KV REST (KV_REST_API_URL or UPSTASH_REDIS_REST_URL)
+ * 2. Local Fallback Driver (with safe /tmp fallback on Vercel)
+ */
+let activeDriverInstance: IStorageDriver | null = null;
 
-    if (typeof window !== "undefined") {
-      try {
-        localStorage.setItem("ai_study_configs", JSON.stringify(configs));
-      } catch {}
-    } else {
-      safeWriteFile("ai_config.json", JSON.stringify(configs, null, 2));
-    }
+function getStorageDriver(): IStorageDriver {
+  if (activeDriverInstance) return activeDriverInstance;
+
+  const kvUrl = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
+  const kvToken = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+
+  if (kvUrl && kvToken) {
+    safeLogger.info("StorageService", "Active storage driver: Vercel KV / Upstash Redis REST");
+    activeDriverInstance = new UpstashKvDriver(kvUrl, kvToken);
+    return activeDriverInstance;
+  }
+
+  safeLogger.warn(
+    "StorageService",
+    "Active storage driver: Local / Serverless Memory Fallback. For full multi-instance persistence in Vercel production, configure KV_REST_API_URL and KV_REST_API_TOKEN."
+  );
+  activeDriverInstance = new LocalFallbackDriver();
+  return activeDriverInstance;
+}
+
+/**
+ * Public Storage API
+ */
+export const StorageService = {
+  async getPapers(): Promise<QuestionPaper[]> {
+    return getStorageDriver().getPapers();
+  },
+
+  async getPaperById(id: string): Promise<QuestionPaper | null> {
+    return getStorageDriver().getPaperById(id);
+  },
+
+  async savePaper(paper: QuestionPaper): Promise<void> {
+    return getStorageDriver().savePaper(paper);
+  },
+
+  async deletePaper(id: string): Promise<boolean> {
+    return getStorageDriver().deletePaper(id);
+  },
+
+  async getTemplates(): Promise<ExamTemplate[]> {
+    return getStorageDriver().getTemplates();
+  },
+
+  async saveTemplate(template: ExamTemplate): Promise<void> {
+    return getStorageDriver().saveTemplate(template);
+  },
+
+  async deleteTemplate(id: string): Promise<boolean> {
+    return getStorageDriver().deleteTemplate(id);
+  },
+
+  async getAIConfigs(): Promise<AIProviderConfig[]> {
+    return getStorageDriver().getAIConfigs();
+  },
+
+  async saveAIConfig(config: AIProviderConfig): Promise<void> {
+    return getStorageDriver().saveAIConfig(config);
   },
 };

@@ -1,46 +1,78 @@
 import { NextRequest, NextResponse } from "next/server";
 import { StorageService } from "@/lib/storage";
 import { AIProviderConfig } from "@/types/paper";
+import { safeLogger } from "@/lib/logger";
 
 export const dynamic = "force-dynamic";
 
+function maskKey(key?: string): string {
+  if (!key) return "";
+  if (key.length <= 8) return "••••••••";
+  return `${key.slice(0, 4)}••••${key.slice(-4)}`;
+}
+
 export async function GET() {
   try {
-    const configs = StorageService.getAIConfigs();
-    // Mask sensitive keys for client display (e.g. "sk-...3a4b")
+    const configs = await StorageService.getAIConfigs();
     const safeConfigs = configs.map((c) => ({
       ...c,
-      apiKey: c.apiKey ? `${c.apiKey.slice(0, 4)}••••${c.apiKey.slice(-4)}` : "",
-      hasKey: !!c.apiKey && c.apiKey.length > 0,
+      apiKey: maskKey(c.apiKey),
+      hasKey: Boolean(c.apiKey && c.apiKey.trim().length > 0),
     }));
     return NextResponse.json({ configs: safeConfigs });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    safeLogger.error("API:AI:Config:GET", error.message, error);
+    return NextResponse.json({ error: error?.message || "Failed to load AI configurations" }, { status: 500 });
   }
 }
 
 export async function POST(req: NextRequest) {
   try {
     const body: AIProviderConfig = await req.json();
-    if (!body.id || !body.provider) {
-      return NextResponse.json({ error: "Invalid configuration" }, { status: 400 });
+    if (!body?.id || !body?.provider) {
+      return NextResponse.json({ error: "Invalid configuration payload" }, { status: 400 });
     }
 
-    // Preserve existing key if client submitted masked or empty key while already configured
-    const existing = StorageService.getAIConfigs().find((c) => c.id === body.id);
+    const existingConfigs = await StorageService.getAIConfigs();
+    const existing = existingConfigs.find((c) => c.id === body.id);
+
+    // Preserve existing real key if client submitted a masked or empty key
     let resolvedKey = body.apiKey;
-    if (body.apiKey && body.apiKey.includes("••••") && existing) {
+    if (resolvedKey && resolvedKey.includes("••••") && existing) {
+      resolvedKey = existing.apiKey;
+    }
+    if (!resolvedKey && existing?.apiKey) {
       resolvedKey = existing.apiKey;
     }
 
     const updatedConfig: AIProviderConfig = {
       ...body,
-      apiKey: resolvedKey || (existing ? existing.apiKey : ""),
+      apiKey: resolvedKey || "",
     };
 
-    StorageService.saveAIConfig(updatedConfig);
-    return NextResponse.json({ success: true, config: updatedConfig });
+    // If activating this provider, mark others as inactive
+    if (updatedConfig.isActive) {
+      for (const other of existingConfigs) {
+        if (other.id !== updatedConfig.id && other.isActive) {
+          await StorageService.saveAIConfig({ ...other, isActive: false });
+        }
+      }
+    }
+
+    await StorageService.saveAIConfig(updatedConfig);
+    safeLogger.info("API:AI:Config:POST", `Saved AI configuration for ${updatedConfig.name} (${updatedConfig.provider})`);
+
+    // Return masked key to never expose secret
+    return NextResponse.json({
+      success: true,
+      config: {
+        ...updatedConfig,
+        apiKey: maskKey(updatedConfig.apiKey),
+        hasKey: Boolean(updatedConfig.apiKey && updatedConfig.apiKey.trim().length > 0),
+      },
+    });
   } catch (error: any) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    safeLogger.error("API:AI:Config:POST", error.message, error);
+    return NextResponse.json({ error: error?.message || "Failed to save AI configuration" }, { status: 500 });
   }
 }

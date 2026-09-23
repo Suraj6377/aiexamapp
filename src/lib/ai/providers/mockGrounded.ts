@@ -133,7 +133,7 @@ export function generateGroundedPaperFromDocument(
       let hindiQText = "";
       let options = undefined;
       let answer = "";
-      let explanation = `Based on the source text regarding ${topicName}: "${excerpt.slice(0, 100)}..."`;
+      const explanation = `Based on the source text regarding ${topicName}: "${excerpt.slice(0, 100)}..."`;
 
       if (secConf.type === "mcq") {
         questionText = `According to the source text on ${topicName}, which of the following statements is correct regarding ${focusWord}?`;

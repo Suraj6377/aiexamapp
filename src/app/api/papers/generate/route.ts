@@ -7,6 +7,7 @@ import { extractAndRepairJSON } from "@/lib/ai/jsonRepair";
 import { GeneratedPaperOutput, GeneratedPaperOutputSchema } from "@/lib/ai/schemas";
 import { generateGroundedPaperFromDocument } from "@/lib/ai/providers/mockGrounded";
 import { generateId } from "@/lib/utils";
+import { safeLogger } from "@/lib/logger";
 
 export const dynamic = "force-dynamic";
 
@@ -20,21 +21,51 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing paper generation configuration" }, { status: 400 });
     }
 
-    // Check for configured AI Provider (client-provided or server-stored)
+    // Resolve AI configuration from client request or persistent storage
+    const serverConfigs = await StorageService.getAIConfigs();
+
     let activeConfig: AIProviderConfig | null = null;
-    if (body.aiConfig && body.aiConfig.apiKey && body.aiConfig.apiKey.trim().length > 0) {
+
+    if (body.aiConfig && body.aiConfig.provider) {
       activeConfig = body.aiConfig;
     } else {
-      const configs = StorageService.getAIConfigs();
-      activeConfig = configs.find((c) => c.isActive && c.apiKey.trim().length > 0) || null;
+      activeConfig = serverConfigs.find((c) => c.isActive && c.apiKey && c.apiKey.trim().length > 0) || null;
+    }
+
+    // Resolve unmasked API key
+    if (activeConfig) {
+      let realKey = activeConfig.apiKey;
+      if (!realKey || realKey.includes("••••")) {
+        const matched = serverConfigs.find(
+          (c) => c.id === activeConfig!.id || c.provider === activeConfig!.provider
+        );
+        if (matched?.apiKey && !matched.apiKey.includes("••••")) {
+          realKey = matched.apiKey;
+        }
+      }
+
+      // Check environment variables as fallback
+      if (!realKey) {
+        if (activeConfig.provider === "gemini") realKey = process.env.GEMINI_API_KEY || "";
+        if (activeConfig.provider === "openai") realKey = process.env.OPENAI_API_KEY || "";
+        if (activeConfig.provider === "anthropic") realKey = process.env.ANTHROPIC_API_KEY || "";
+        if (activeConfig.provider === "groq") realKey = process.env.GROQ_API_KEY || "";
+        if (activeConfig.provider === "openrouter") realKey = process.env.OPENROUTER_API_KEY || "";
+      }
+
+      activeConfig = { ...activeConfig, apiKey: realKey };
     }
 
     let generatedOutput: GeneratedPaperOutput | null = null;
     let providerUsed = "Local Grounded Engine";
 
-    if (activeConfig && activeConfig.apiKey) {
+    const hasExternalKey = Boolean(activeConfig?.apiKey && activeConfig.apiKey.trim().length > 0);
+
+    if (activeConfig && hasExternalKey) {
+      providerUsed = activeConfig.name || activeConfig.provider;
+      safeLogger.info("PaperGeneration", `Invoking AI provider ${providerUsed} (model: ${activeConfig.model})`);
+
       try {
-        providerUsed = activeConfig.name || activeConfig.provider;
         const systemPrompt = buildSystemPrompt(config);
         const userPrompt = buildUserPrompt(config, documentText);
 
@@ -44,17 +75,32 @@ export async function POST(req: NextRequest) {
 
         if (validated.success) {
           generatedOutput = validated.data;
+          safeLogger.info("PaperGeneration", `Successfully received structured response from ${providerUsed}`);
         } else {
-          console.warn("AI output failed strict schema validation, falling back to grounded repair:", validated.error);
+          safeLogger.warn("PaperGeneration", `AI output schema mismatch from ${providerUsed}: ${validated.error.message}`);
+          throw new Error(`AI model returned output that could not be parsed into a valid paper structure. Detail: ${validated.error.issues[0]?.message || "Format error"}`);
         }
       } catch (aiErr: any) {
-        console.warn(`External AI generation failed (${activeConfig.provider}): ${aiErr.message}. Falling back to grounded generator.`);
+        safeLogger.error("PaperGeneration", `AI generation error (${providerUsed}): ${aiErr.message}`, aiErr);
+        // Do not silently mask the error; report the genuine failure to the user
+        return NextResponse.json(
+          {
+            error: `${providerUsed} failed: ${aiErr.message}. Please check your API key, model selection, or network settings in Settings > AI Providers.`,
+          },
+          { status: 502 }
+        );
       }
+    } else {
+      // Grounded engine when no external key is configured
+      safeLogger.info("PaperGeneration", "No external AI key configured; synthesizing grounded paper from document text");
+      generatedOutput = generateGroundedPaperFromDocument(config, documentText);
     }
 
-    // Fallback to high-quality local grounded generator if no API key or if provider failed
     if (!generatedOutput) {
-      generatedOutput = generateGroundedPaperFromDocument(config, documentText);
+      return NextResponse.json(
+        { error: "Generation engine was unable to synthesize examination paper questions." },
+        { status: 500 }
+      );
     }
 
     // Construct full QuestionPaper model
@@ -63,61 +109,71 @@ export async function POST(req: NextRequest) {
 
     // Assign sequential numbering to questions across sections
     let qCounter = 1;
-    const structuredSections = generatedOutput.sections.map((sec, sIdx) => ({
-      id: sec.id || `sec_${sIdx + 1}`,
+    const structuredSections = generatedOutput.sections.map((sec, secIdx) => ({
+      id: `sec_${secIdx + 1}`,
       title: sec.title,
       hindiTitle: sec.hindiTitle,
       instructions: sec.instructions,
       hindiInstructions: sec.hindiInstructions,
-      marksPerQuestion: sec.marksPerQuestion,
-      questions: sec.questions.map((q) => ({
-        ...q,
-        id: q.id || `q_${qCounter}`,
+      marksPerQuestion: sec.marksPerQuestion || 1,
+      questions: sec.questions.map((q, qIdx) => ({
+        id: `q_${secIdx + 1}_${qIdx + 1}`,
         number: qCounter++,
+        question: q.question,
+        hindiQuestion: q.hindiQuestion,
+        type: q.type,
+        marks: q.marks,
+        difficulty: q.difficulty || "medium",
+        topic: q.topic || "Core Syllabus",
+        chapter: q.chapter || "Unit Assessment",
+        options: q.options?.map((opt, optIdx) => ({
+          id: `opt_${optIdx + 1}`,
+          label: opt.label,
+          text: opt.text,
+          hindiText: opt.hindiText,
+        })),
+        answer: q.answer,
+        explanation: q.explanation,
+        assertion: q.assertion,
+        reason: q.reason,
+        matchPairs: q.matchPairs,
+        caseText: q.caseText,
       })),
     }));
 
-    const calculatedTotalMarks = structuredSections.reduce(
-      (acc, s) => acc + s.questions.reduce((qAcc, q) => qAcc + (q.marks || 0), 0),
-      0
-    );
-
     const questionPaper: QuestionPaper = {
       id: paperId,
-      title: generatedOutput.paperTitle || `${config.subject} ${config.examType}`,
+      title: generatedOutput.paperTitle || `${config.subject} Examination Paper`,
       subject: config.subject,
       className: config.className,
       examType: config.examType,
       language: config.language,
+      status: "draft",
+      includeAnswerKey: config.advancedOptions?.generateAnswerKey ?? true,
       createdAt: now,
       updatedAt: now,
-      status: "generated",
-      includeAnswerKey: config.advancedOptions.generateAnswerKey ?? true,
       header: {
-        institutionName: "DELHI PUBLIC ACADEMY / EXAMINATION BOARD",
-        hindiInstitutionName: "केंद्रीय माध्यमिक शिक्षा बोर्ड / परीक्षा परिषद",
-        examName: config.examType.toUpperCase() + " EXAMINATION",
-        hindiExamName: config.examType + " परीक्षा",
-        subject: config.subject.toUpperCase(),
-        hindiSubject: config.language === "hindi" || config.language === "bilingual" ? config.subject : undefined,
+        institutionName: "CENTRAL BOARD OF EDUCATION",
+        examName: generatedOutput.paperTitle || `${config.examType} - ${config.subject}`,
+        subject: config.subject,
         className: config.className,
-        durationMinutes: config.durationMinutes,
-        totalMarks: config.totalMarks || calculatedTotalMarks,
-        paperCode: `QP-${Math.floor(1000 + Math.random() * 9000)}/${new Date().getFullYear()}`,
+        durationMinutes: generatedOutput.durationMinutes || config.durationMinutes,
+        totalMarks: generatedOutput.totalMarks || config.totalMarks,
+        paperCode: `EX-${new Date().getFullYear()}`,
         generalInstructions: generatedOutput.generalInstructions || [
           "All questions are compulsory.",
-          "Read each question carefully before attempting.",
-          "Write answers clearly with proper question numbering.",
+          "Read each question carefully before answering.",
+          "Marks for each question are indicated against it.",
         ],
       },
       footer: {
-        text: `Examination Paper | ${config.subject}`,
+        text: `${config.subject} • ${config.className} • Examination Paper`,
         pageNumberPosition: "bottom-center",
         showDate: true,
       },
       styling: {
         paperSize: "A4",
-        fontFamily: config.language === "hindi" ? "Noto Sans" : "Times New Roman",
+        fontFamily: "Times New Roman",
         fontSize: 11,
         lineHeight: 1.4,
         questionSpacing: 10,
@@ -135,7 +191,8 @@ export async function POST(req: NextRequest) {
     };
 
     // Save to persistent storage
-    StorageService.savePaper(questionPaper);
+    await StorageService.savePaper(questionPaper);
+    safeLogger.info("PaperGeneration", `Saved newly generated paper ${questionPaper.id} to storage`);
 
     return NextResponse.json({
       success: true,
@@ -143,7 +200,7 @@ export async function POST(req: NextRequest) {
       providerUsed,
     });
   } catch (error: any) {
-    console.error("Paper generation failed:", error);
+    safeLogger.error("PaperGeneration", `Paper generation fatal error: ${error?.message}`, error);
     return NextResponse.json(
       { error: error?.message || "Failed to generate question paper" },
       { status: 500 }
