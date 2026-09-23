@@ -16,6 +16,7 @@ import {
   Check,
 } from "lucide-react";
 import { useToast } from "@/components/providers/ToastProvider";
+import { DEFAULT_TEMPLATES } from "@/lib/templates/defaultTemplates";
 
 interface ApplyTemplateModalProps {
   isOpen: boolean;
@@ -31,25 +32,44 @@ export function ApplyTemplateModal({
   onApplyTemplate,
 }: ApplyTemplateModalProps) {
   const { success, error } = useToast();
-  const [templates, setTemplates] = useState<ExamTemplate[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
+  const [templates, setTemplates] = useState<ExamTemplate[]>(DEFAULT_TEMPLATES);
+  const [loading, setLoading] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(
+    DEFAULT_TEMPLATES[0]?.id || null
+  );
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [updateSectionTitles, setUpdateSectionTitles] = useState(false);
 
   useEffect(() => {
     if (!isOpen) return;
     async function loadTemplates() {
+      // 1. Check local storage
+      try {
+        const local = localStorage.getItem("ai_study_templates");
+        if (local) {
+          const parsed = JSON.parse(local);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setTemplates(parsed);
+            if (!selectedTemplateId) setSelectedTemplateId(parsed[0].id);
+          }
+        }
+      } catch {}
+
+      // 2. Fetch server API
       try {
         const res = await fetch("/api/templates");
-        const data = await res.json();
-        const tpls: ExamTemplate[] = data.templates || [];
-        setTemplates(tpls);
-        if (tpls.length > 0 && !selectedTemplateId) {
-          setSelectedTemplateId(tpls[0].id);
+        if (res.ok) {
+          const data = await res.json();
+          const tpls: ExamTemplate[] = data.templates || [];
+          if (tpls.length > 0) {
+            setTemplates(tpls);
+            if (!selectedTemplateId) {
+              setSelectedTemplateId(tpls[0].id);
+            }
+          }
         }
       } catch (err) {
-        error("Failed to load templates");
+        console.warn("Could not reach /api/templates, utilizing cached templates", err);
       } finally {
         setLoading(false);
       }

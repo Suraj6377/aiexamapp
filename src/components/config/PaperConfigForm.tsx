@@ -7,7 +7,9 @@ import {
   PaperGenerationConfig,
   QuestionType,
   DifficultyLevel,
+  ExamTemplate,
 } from "@/types/paper";
+import { DEFAULT_TEMPLATES } from "@/lib/templates/defaultTemplates";
 import {
   Sparkles,
   Sliders,
@@ -24,7 +26,6 @@ import {
   AlertTriangle,
   LayoutTemplate,
 } from "lucide-react";
-import { ExamTemplate } from "@/types/paper";
 
 interface PaperConfigFormProps {
   documentMetadata?: DocumentMetadata | null;
@@ -92,13 +93,32 @@ export function PaperConfigForm({ documentMetadata, onSubmit, isGenerating = fal
   );
 
   // Templates Preset
-  const [availableTemplates, setAvailableTemplates] = useState<ExamTemplate[]>([]);
+  const [availableTemplates, setAvailableTemplates] = useState<ExamTemplate[]>(DEFAULT_TEMPLATES);
   const [appliedTemplateId, setAppliedTemplateId] = useState<string>("");
 
   React.useEffect(() => {
+    // 1. LocalStorage
+    try {
+      const local = localStorage.getItem("ai_study_templates");
+      if (local) {
+        const parsed = JSON.parse(local);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setAvailableTemplates(parsed);
+        }
+      }
+    } catch {}
+
+    // 2. Fetch server templates
     fetch("/api/templates")
       .then((r) => r.json())
-      .then((d) => setAvailableTemplates(d.templates || []))
+      .then((d) => {
+        if (Array.isArray(d.templates) && d.templates.length > 0) {
+          setAvailableTemplates(d.templates);
+          try {
+            localStorage.setItem("ai_study_templates", JSON.stringify(d.templates));
+          } catch {}
+        }
+      })
       .catch(() => {});
   }, []);
 

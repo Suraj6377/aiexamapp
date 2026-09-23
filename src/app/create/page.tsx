@@ -27,12 +27,23 @@ export default function CreatePaperPage() {
     info("Synthesizing examination questions from grounded topics...", "AI Generation Engine");
 
     try {
+      // Find active client-saved AI provider
+      let clientAiConfig = null;
+      try {
+        const local = localStorage.getItem("ai_study_configs");
+        if (local) {
+          const parsed = JSON.parse(local);
+          clientAiConfig = parsed.find((c: any) => c.isActive && c.apiKey && c.apiKey.trim().length > 0) || null;
+        }
+      } catch {}
+
       const res = await fetch("/api/papers/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           config,
           documentText: documentMetadata?.extractedText || "",
+          aiConfig: clientAiConfig,
         }),
       });
 
@@ -45,6 +56,14 @@ export default function CreatePaperPage() {
       if (!data.paper?.id) {
         throw new Error("Invalid response received from generation engine");
       }
+
+      // Immediately cache generated paper to localStorage for reliable serverless access
+      try {
+        const localPapers = localStorage.getItem("ai_study_papers");
+        const existing = localPapers ? JSON.parse(localPapers) : [];
+        const updated = [data.paper, ...existing.filter((p: any) => p.id !== data.paper.id)];
+        localStorage.setItem("ai_study_papers", JSON.stringify(updated));
+      } catch {}
 
       success(`Generated successfully with ${data.providerUsed || "AI Engine"}!`, "Paper Ready");
       router.push(`/editor/${data.paper.id}`);

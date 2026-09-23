@@ -18,24 +18,45 @@ import {
 } from "lucide-react";
 import { useToast } from "@/components/providers/ToastProvider";
 import { CreateTemplateModal } from "@/components/templates/CreateTemplateModal";
+import { DEFAULT_TEMPLATES } from "@/lib/templates/defaultTemplates";
 
 export default function TemplatesPage() {
   const router = useRouter();
   const { success, error, info } = useToast();
 
-  const [templates, setTemplates] = useState<ExamTemplate[]>([]);
+  const [templates, setTemplates] = useState<ExamTemplate[]>(DEFAULT_TEMPLATES);
   const [loading, setLoading] = useState(true);
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const loadTemplates = async () => {
+    // 1. Initial hydration from localStorage if available
+    try {
+      const local = localStorage.getItem("ai_study_templates");
+      if (local) {
+        const parsed = JSON.parse(local);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setTemplates(parsed);
+        }
+      }
+    } catch {}
+
+    // 2. Fetch from server API
     try {
       const res = await fetch("/api/templates");
-      const data = await res.json();
-      setTemplates(data.templates || []);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.templates) && data.templates.length > 0) {
+          setTemplates(data.templates);
+          try {
+            localStorage.setItem("ai_study_templates", JSON.stringify(data.templates));
+          } catch {}
+          return;
+        }
+      }
     } catch (err) {
-      error("Failed to load templates");
+      console.warn("Could not reach /api/templates, utilizing local templates cache", err);
     } finally {
       setLoading(false);
     }
@@ -62,13 +83,18 @@ export default function TemplatesPage() {
 
     setDeletingId(id);
     try {
-      const res = await fetch("/api/templates", {
+      await fetch("/api/templates", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id }),
       });
-      if (!res.ok) throw new Error("Failed to delete template");
-      setTemplates((prev) => prev.filter((t) => t.id !== id));
+      setTemplates((prev) => {
+        const updated = prev.filter((t) => t.id !== id);
+        try {
+          localStorage.setItem("ai_study_templates", JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
       success(`Template "${name}" deleted.`);
     } catch (err: any) {
       error(err.message || "Delete failed");
@@ -78,7 +104,13 @@ export default function TemplatesPage() {
   };
 
   const handleTemplateCreated = (newTpl: ExamTemplate) => {
-    setTemplates((prev) => [newTpl, ...prev]);
+    setTemplates((prev) => {
+      const updated = [newTpl, ...prev];
+      try {
+        localStorage.setItem("ai_study_templates", JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
   };
 
   return (

@@ -47,10 +47,69 @@ const GEMINI_RECOMMENDED = [
   { id: "gemini-1.5-flash", label: "Gemini 1.5 Flash", tag: "Standard Stable" },
 ];
 
+const DEFAULT_CONFIGS: AIProviderConfig[] = [
+  {
+    id: "cfg_gemini",
+    provider: "gemini",
+    name: "Google Gemini",
+    apiKey: "",
+    model: "gemini-2.0-flash",
+    temperature: 0.3,
+    maxTokens: 8192,
+    isDefault: true,
+    isActive: true,
+  },
+  {
+    id: "cfg_openrouter",
+    provider: "openrouter",
+    name: "OpenRouter",
+    apiKey: "",
+    baseUrl: "https://openrouter.ai/api/v1",
+    model: "anthropic/claude-3.5-sonnet",
+    temperature: 0.3,
+    maxTokens: 4096,
+    isDefault: false,
+    isActive: false,
+  },
+  {
+    id: "cfg_groq",
+    provider: "groq",
+    name: "Groq (Fast Inference)",
+    apiKey: "",
+    model: "llama-3.3-70b-versatile",
+    temperature: 0.3,
+    maxTokens: 4096,
+    isDefault: false,
+    isActive: false,
+  },
+  {
+    id: "cfg_openai",
+    provider: "openai",
+    name: "OpenAI",
+    apiKey: "",
+    model: "gpt-4o-mini",
+    temperature: 0.3,
+    maxTokens: 4096,
+    isDefault: false,
+    isActive: false,
+  },
+  {
+    id: "cfg_anthropic",
+    provider: "anthropic",
+    name: "Anthropic Claude",
+    apiKey: "",
+    model: "claude-3-5-sonnet-20241022",
+    temperature: 0.3,
+    maxTokens: 4096,
+    isDefault: false,
+    isActive: false,
+  },
+];
+
 export default function AISettingsPage() {
   const { success, error, info } = useToast();
 
-  const [configs, setConfigs] = useState<AIProviderConfig[]>([]);
+  const [configs, setConfigs] = useState<AIProviderConfig[]>(DEFAULT_CONFIGS);
   const [loading, setLoading] = useState(true);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<string | null>(null);
@@ -66,21 +125,52 @@ export default function AISettingsPage() {
 
   useEffect(() => {
     async function loadConfigs() {
+      let activeList: AIProviderConfig[] = DEFAULT_CONFIGS;
+
+      // 1. Initial hydration from localStorage
+      try {
+        const local = localStorage.getItem("ai_study_configs");
+        if (local) {
+          const parsed: AIProviderConfig[] = JSON.parse(local);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            activeList = parsed;
+            setConfigs(parsed);
+          }
+        }
+      } catch {}
+
+      // 2. Fetch from server API
       try {
         const res = await fetch("/api/ai/config");
-        const data = await res.json();
-        const loadedConfigs: AIProviderConfig[] = data.configs || [];
-        setConfigs(loadedConfigs);
-
-        // Preload OpenRouter models if OpenRouter provider exists
-        const openrouterCfg = loadedConfigs.find((c) => c.provider === "openrouter");
-        if (openrouterCfg) {
-          fetchModelsForProvider(openrouterCfg, openrouterCfg.apiKey);
+        if (res.ok) {
+          const data = await res.json();
+          const serverConfigs: AIProviderConfig[] = data.configs || [];
+          if (Array.isArray(serverConfigs) && serverConfigs.length > 0) {
+            // Merge: preserve local raw unmasked API keys if client entered them
+            const merged = serverConfigs.map((sc) => {
+              const localMatch = activeList.find((lc) => lc.id === sc.id);
+              if (localMatch && localMatch.apiKey && !localMatch.apiKey.includes("••••")) {
+                return { ...sc, apiKey: localMatch.apiKey };
+              }
+              return sc;
+            });
+            activeList = merged;
+            setConfigs(merged);
+            try {
+              localStorage.setItem("ai_study_configs", JSON.stringify(merged));
+            } catch {}
+          }
         }
       } catch (err) {
-        error("Failed to load AI configurations");
+        console.warn("Could not reach /api/ai/config, using local configs", err);
       } finally {
         setLoading(false);
+      }
+
+      // Preload OpenRouter models if OpenRouter provider exists
+      const openrouterCfg = activeList.find((c) => c.provider === "openrouter");
+      if (openrouterCfg) {
+        fetchModelsForProvider(openrouterCfg, openrouterCfg.apiKey);
       }
     }
     loadConfigs();
@@ -122,6 +212,9 @@ export default function AISettingsPage() {
   const updateConfigField = (id: string, updates: Partial<AIProviderConfig>) => {
     setConfigs((prev) => {
       const next = prev.map((c) => (c.id === id ? { ...c, ...updates } : c));
+      try {
+        localStorage.setItem("ai_study_configs", JSON.stringify(next));
+      } catch {}
       return next;
     });
 
@@ -175,16 +268,29 @@ export default function AISettingsPage() {
   const handleSaveConfig = async (config: AIProviderConfig) => {
     setSavingId(config.id);
     try {
+      // 1. Save to localStorage immediately
+      setConfigs((prev) => {
+        const next = prev.map((c) => (c.id === config.id ? config : c));
+        try {
+          localStorage.setItem("ai_study_configs", JSON.stringify(next));
+        } catch {}
+        return next;
+      });
+
+      // 2. Synchronize with server API
       const res = await fetch("/api/ai/config", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(config),
       });
 
-      if (!res.ok) throw new Error("Failed to save configuration");
+      if (!res.ok) {
+        console.warn("Server API returned non-OK, saved to local storage");
+      }
       success(`${config.name} configuration saved securely!`, "Settings Updated");
     } catch (err: any) {
-      error(err.message || "Save failed");
+      console.warn("Could not reach /api/ai/config, saved locally:", err);
+      success(`${config.name} saved in browser storage!`, "Settings Saved Locally");
     } finally {
       setSavingId(null);
     }

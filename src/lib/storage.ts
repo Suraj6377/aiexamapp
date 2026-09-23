@@ -1,23 +1,80 @@
-import { AIProviderConfig, DocumentMetadata, ExamTemplate, QuestionPaper } from "@/types/paper";
+import { AIProviderConfig, ExamTemplate, QuestionPaper } from "@/types/paper";
 import { DEFAULT_TEMPLATES } from "./templates/defaultTemplates";
 import fs from "fs";
 import path from "path";
+import os from "os";
 
-const DATA_DIR = path.join(process.cwd(), "data");
-const PAPERS_FILE = path.join(DATA_DIR, "papers.json");
-const TEMPLATES_FILE = path.join(DATA_DIR, "templates.json");
-const AI_CONFIG_FILE = path.join(DATA_DIR, "ai_config.json");
-const DOCUMENTS_FILE = path.join(DATA_DIR, "documents.json");
+// Determine a safe writable storage directory:
+// 1. Try local `./data` (standard local development)
+// 2. If `./data` cannot be written to or is read-only (e.g. Vercel, Netlify, AWS Lambda), fallback to `os.tmpdir()/ai_study_data`
+function getSafeDataDir(): string {
+  if (typeof window !== "undefined") return "";
 
-function ensureDataDir() {
-  if (typeof window === "undefined") {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
+  // 1. Try local ./data first
+  try {
+    const localDir = path.join(process.cwd(), "data");
+    if (!fs.existsSync(localDir)) {
+      fs.mkdirSync(localDir, { recursive: true });
+    }
+    const testFile = path.join(localDir, `.write_test_${Date.now()}`);
+    fs.writeFileSync(testFile, "ok", "utf8");
+    fs.unlinkSync(testFile);
+    return localDir;
+  } catch {
+    // Read-only filesystem (Vercel, Netlify, Lambda)
+    try {
+      const tmpDir = path.join(os.tmpdir(), "ai_study_data");
+      if (!fs.existsSync(tmpDir)) {
+        fs.mkdirSync(tmpDir, { recursive: true });
+      }
+      return tmpDir;
+    } catch {
+      return os.tmpdir();
     }
   }
 }
 
-// 1. Initial Sample Papers for immediate out-of-the-box exploration
+let activeDataDir: string | null = null;
+function getDataDir(): string {
+  if (!activeDataDir) {
+    activeDataDir = getSafeDataDir();
+  }
+  return activeDataDir;
+}
+
+function getFilePath(filename: string): string {
+  const dir = getDataDir();
+  return dir ? path.join(/*turbopackIgnore: true*/ dir, filename) : "";
+}
+
+function safeReadFile(filename: string): string | null {
+  try {
+    const p = getFilePath(filename);
+    if (p && fs.existsSync(p)) {
+      return fs.readFileSync(p, "utf8");
+    }
+  } catch {}
+  return null;
+}
+
+function safeWriteFile(filename: string, content: string): boolean {
+  try {
+    const p = getFilePath(filename);
+    if (p) {
+      fs.writeFileSync(p, content, "utf8");
+      return true;
+    }
+  } catch {
+    try {
+      const fallbackPath = path.join(os.tmpdir(), filename);
+      fs.writeFileSync(fallbackPath, content, "utf8");
+      return true;
+    } catch {}
+  }
+  return false;
+}
+
+// Initial Sample Papers for immediate out-of-the-box exploration
 const SEED_PAPERS: QuestionPaper[] = [
   {
     id: "paper_cbse_phy_2026",
@@ -155,7 +212,66 @@ const SEED_PAPERS: QuestionPaper[] = [
   },
 ];
 
-// In-memory cache for fast local responses
+const DEFAULT_AI_CONFIGS: AIProviderConfig[] = [
+  {
+    id: "cfg_gemini",
+    provider: "gemini",
+    name: "Google Gemini",
+    apiKey: process.env.GEMINI_API_KEY || "",
+    model: "gemini-2.0-flash",
+    temperature: 0.3,
+    maxTokens: 8192,
+    isDefault: true,
+    isActive: true,
+  },
+  {
+    id: "cfg_openai",
+    provider: "openai",
+    name: "OpenAI",
+    apiKey: process.env.OPENAI_API_KEY || "",
+    model: "gpt-4o-mini",
+    temperature: 0.3,
+    maxTokens: 4096,
+    isDefault: false,
+    isActive: false,
+  },
+  {
+    id: "cfg_anthropic",
+    provider: "anthropic",
+    name: "Anthropic Claude",
+    apiKey: process.env.ANTHROPIC_API_KEY || "",
+    model: "claude-3-5-sonnet-20241022",
+    temperature: 0.3,
+    maxTokens: 4096,
+    isDefault: false,
+    isActive: false,
+  },
+  {
+    id: "cfg_groq",
+    provider: "groq",
+    name: "Groq (Fast Inference)",
+    apiKey: process.env.GROQ_API_KEY || "",
+    model: "llama-3.3-70b-versatile",
+    temperature: 0.3,
+    maxTokens: 4096,
+    isDefault: false,
+    isActive: false,
+  },
+  {
+    id: "cfg_openrouter",
+    provider: "openrouter",
+    name: "OpenRouter",
+    apiKey: process.env.OPENROUTER_API_KEY || "",
+    baseUrl: "https://openrouter.ai/api/v1",
+    model: "anthropic/claude-3.5-sonnet",
+    temperature: 0.3,
+    maxTokens: 4096,
+    isDefault: false,
+    isActive: false,
+  },
+];
+
+// In-memory cache for fast local responses and serverless resilience
 let cachedPapers: QuestionPaper[] | null = null;
 let cachedTemplates: ExamTemplate[] | null = null;
 let cachedConfigs: AIProviderConfig[] | null = null;
@@ -166,24 +282,29 @@ export const StorageService = {
     if (typeof window !== "undefined") {
       try {
         const local = localStorage.getItem("ai_study_papers");
-        if (local) return JSON.parse(local);
+        if (local) {
+          const parsed = JSON.parse(local);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
       } catch {}
       return SEED_PAPERS;
     }
 
-    ensureDataDir();
-    if (cachedPapers) return cachedPapers;
-    try {
-      if (fs.existsSync(PAPERS_FILE)) {
-        const raw = fs.readFileSync(PAPERS_FILE, "utf8");
-        cachedPapers = JSON.parse(raw);
-        return cachedPapers || [];
-      }
-    } catch {}
-    cachedPapers = SEED_PAPERS;
-    try {
-      fs.writeFileSync(PAPERS_FILE, JSON.stringify(SEED_PAPERS, null, 2), "utf8");
-    } catch {}
+    if (cachedPapers && cachedPapers.length > 0) return cachedPapers;
+
+    const raw = safeReadFile("papers.json");
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          cachedPapers = parsed;
+          return cachedPapers;
+        }
+      } catch {}
+    }
+
+    cachedPapers = [...SEED_PAPERS];
+    safeWriteFile("papers.json", JSON.stringify(cachedPapers, null, 2));
     return cachedPapers;
   },
 
@@ -201,16 +322,14 @@ export const StorageService = {
       papers.unshift({ ...paper, updatedAt: new Date().toISOString() });
     }
 
+    cachedPapers = papers;
+
     if (typeof window !== "undefined") {
       try {
         localStorage.setItem("ai_study_papers", JSON.stringify(papers));
       } catch {}
     } else {
-      ensureDataDir();
-      cachedPapers = papers;
-      try {
-        fs.writeFileSync(PAPERS_FILE, JSON.stringify(papers, null, 2), "utf8");
-      } catch {}
+      safeWriteFile("papers.json", JSON.stringify(papers, null, 2));
     }
   },
 
@@ -218,17 +337,14 @@ export const StorageService = {
     let papers = this.getPapers();
     const initialLen = papers.length;
     papers = papers.filter((p) => p.id !== id);
+    cachedPapers = papers;
 
     if (typeof window !== "undefined") {
       try {
         localStorage.setItem("ai_study_papers", JSON.stringify(papers));
       } catch {}
     } else {
-      ensureDataDir();
-      cachedPapers = papers;
-      try {
-        fs.writeFileSync(PAPERS_FILE, JSON.stringify(papers, null, 2), "utf8");
-      } catch {}
+      safeWriteFile("papers.json", JSON.stringify(papers, null, 2));
     }
     return papers.length < initialLen;
   },
@@ -238,24 +354,32 @@ export const StorageService = {
     if (typeof window !== "undefined") {
       try {
         const local = localStorage.getItem("ai_study_templates");
-        if (local) return JSON.parse(local);
+        if (local) {
+          const parsed = JSON.parse(local);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
       } catch {}
       return DEFAULT_TEMPLATES;
     }
 
-    ensureDataDir();
-    if (cachedTemplates) return cachedTemplates;
-    try {
-      if (fs.existsSync(TEMPLATES_FILE)) {
-        const raw = fs.readFileSync(TEMPLATES_FILE, "utf8");
-        cachedTemplates = JSON.parse(raw);
-        return cachedTemplates || [];
-      }
-    } catch {}
-    cachedTemplates = DEFAULT_TEMPLATES;
-    try {
-      fs.writeFileSync(TEMPLATES_FILE, JSON.stringify(DEFAULT_TEMPLATES, null, 2), "utf8");
-    } catch {}
+    if (cachedTemplates && cachedTemplates.length > 0) return cachedTemplates;
+
+    const raw = safeReadFile("templates.json");
+    if (raw) {
+      try {
+        const parsed: ExamTemplate[] = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // Merge with DEFAULT_TEMPLATES so built-in templates are never missing
+          const existingIds = new Set(parsed.map((t) => t.id));
+          const missingDefaults = DEFAULT_TEMPLATES.filter((dt) => !existingIds.has(dt.id));
+          cachedTemplates = [...parsed, ...missingDefaults];
+          return cachedTemplates;
+        }
+      } catch {}
+    }
+
+    cachedTemplates = [...DEFAULT_TEMPLATES];
+    safeWriteFile("templates.json", JSON.stringify(DEFAULT_TEMPLATES, null, 2));
     return cachedTemplates;
   },
 
@@ -267,13 +391,15 @@ export const StorageService = {
     } else {
       templates.push(template);
     }
+
+    cachedTemplates = templates;
+
     if (typeof window !== "undefined") {
       try {
         localStorage.setItem("ai_study_templates", JSON.stringify(templates));
       } catch {}
     } else {
-      ensureDataDir();
-      cachedTemplates = templates;
+      safeWriteFile("templates.json", JSON.stringify(templates, null, 2));
     }
   },
 
@@ -281,117 +407,88 @@ export const StorageService = {
     let templates = this.getTemplates();
     const initialLen = templates.length;
     templates = templates.filter((t) => t.id !== id);
+    cachedTemplates = templates;
+
     if (typeof window !== "undefined") {
       try {
         localStorage.setItem("ai_study_templates", JSON.stringify(templates));
       } catch {}
     } else {
-      ensureDataDir();
-      cachedTemplates = templates;
-      try {
-        fs.writeFileSync(TEMPLATES_FILE, JSON.stringify(templates, null, 2), "utf8");
-      } catch {}
+      safeWriteFile("templates.json", JSON.stringify(templates, null, 2));
     }
     return templates.length < initialLen;
   },
 
   // AI Configurations
   getAIConfigs(): AIProviderConfig[] {
-    const defaults: AIProviderConfig[] = [
-      {
-        id: "cfg_gemini",
-        provider: "gemini",
-        name: "Google Gemini",
-        apiKey: process.env.GEMINI_API_KEY || "",
-        model: "gemini-2.0-flash",
-        temperature: 0.3,
-        maxTokens: 8192,
-        isDefault: true,
-        isActive: true,
-      },
-      {
-        id: "cfg_openai",
-        provider: "openai",
-        name: "OpenAI",
-        apiKey: process.env.OPENAI_API_KEY || "",
-        model: "gpt-4o-mini",
-        temperature: 0.3,
-        maxTokens: 4096,
-        isDefault: false,
-        isActive: false,
-      },
-      {
-        id: "cfg_anthropic",
-        provider: "anthropic",
-        name: "Anthropic Claude",
-        apiKey: process.env.ANTHROPIC_API_KEY || "",
-        model: "claude-3-5-sonnet-20241022",
-        temperature: 0.3,
-        maxTokens: 4096,
-        isDefault: false,
-        isActive: false,
-      },
-      {
-        id: "cfg_groq",
-        provider: "groq",
-        name: "Groq (Fast Inference)",
-        apiKey: process.env.GROQ_API_KEY || "",
-        model: "llama-3.3-70b-versatile",
-        temperature: 0.3,
-        maxTokens: 4096,
-        isDefault: false,
-        isActive: false,
-      },
-      {
-        id: "cfg_openrouter",
-        provider: "openrouter",
-        name: "OpenRouter",
-        apiKey: process.env.OPENROUTER_API_KEY || "",
-        baseUrl: "https://openrouter.ai/api/v1",
-        model: "anthropic/claude-3.5-sonnet",
-        temperature: 0.3,
-        maxTokens: 4096,
-        isDefault: false,
-        isActive: false,
-      },
-    ];
+    const envDefaults = DEFAULT_AI_CONFIGS.map((cfg) => {
+      let key = cfg.apiKey;
+      if (!key) {
+        if (cfg.provider === "gemini") key = process.env.GEMINI_API_KEY || "";
+        if (cfg.provider === "openai") key = process.env.OPENAI_API_KEY || "";
+        if (cfg.provider === "anthropic") key = process.env.ANTHROPIC_API_KEY || "";
+        if (cfg.provider === "groq") key = process.env.GROQ_API_KEY || "";
+        if (cfg.provider === "openrouter") key = process.env.OPENROUTER_API_KEY || "";
+      }
+      return { ...cfg, apiKey: key };
+    });
 
     if (typeof window !== "undefined") {
       try {
         const local = localStorage.getItem("ai_study_configs");
         if (local) {
           const parsed: AIProviderConfig[] = JSON.parse(local);
-          // Ensure OpenRouter is present if older local storage didn't have it
-          if (!parsed.some((c) => c.provider === "openrouter")) {
-            parsed.push(defaults.find((d) => d.provider === "openrouter")!);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            // Ensure OpenRouter is present
+            if (!parsed.some((c) => c.provider === "openrouter")) {
+              const def = envDefaults.find((d) => d.provider === "openrouter");
+              if (def) parsed.push(def);
+            }
+            return parsed;
           }
-          const geminiCfg = parsed.find((c) => c.provider === "gemini");
-          if (geminiCfg && geminiCfg.model === "gemini-1.5-flash") {
-            geminiCfg.model = "gemini-2.0-flash";
-          }
-          return parsed;
         }
       } catch {}
-      return defaults;
+      return envDefaults;
     }
 
-    ensureDataDir();
-    if (cachedConfigs) return cachedConfigs;
-    try {
-      if (fs.existsSync(AI_CONFIG_FILE)) {
-        const raw = fs.readFileSync(AI_CONFIG_FILE, "utf8");
-        cachedConfigs = JSON.parse(raw);
-        if (cachedConfigs && !cachedConfigs.some((c) => c.provider === "openrouter")) {
-          cachedConfigs.push(defaults.find((d) => d.provider === "openrouter")!);
+    if (cachedConfigs && cachedConfigs.length > 0) {
+      // Augment with env variables if any config lacks a key
+      return cachedConfigs.map((c) => {
+        if (!c.apiKey) {
+          const matchingDef = envDefaults.find((d) => d.id === c.id || d.provider === c.provider);
+          if (matchingDef && matchingDef.apiKey) {
+            return { ...c, apiKey: matchingDef.apiKey };
+          }
         }
-        const geminiCfg = cachedConfigs?.find((c: any) => c.provider === "gemini");
-        if (geminiCfg && geminiCfg.model === "gemini-1.5-flash") {
-          geminiCfg.model = "gemini-2.0-flash";
+        return c;
+      });
+    }
+
+    const raw = safeReadFile("ai_config.json");
+    if (raw) {
+      try {
+        const parsed: AIProviderConfig[] = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          if (!parsed.some((c) => c.provider === "openrouter")) {
+            const def = envDefaults.find((d) => d.provider === "openrouter");
+            if (def) parsed.push(def);
+          }
+          cachedConfigs = parsed.map((c) => {
+            if (!c.apiKey) {
+              const matchingDef = envDefaults.find((d) => d.id === c.id || d.provider === c.provider);
+              if (matchingDef && matchingDef.apiKey) {
+                return { ...c, apiKey: matchingDef.apiKey };
+              }
+            }
+            return c;
+          });
+          return cachedConfigs;
         }
-        return cachedConfigs || [];
-      }
-    } catch {}
-    cachedConfigs = defaults;
+      } catch {}
+    }
+
+    cachedConfigs = [...envDefaults];
+    safeWriteFile("ai_config.json", JSON.stringify(envDefaults, null, 2));
     return cachedConfigs;
   },
 
@@ -403,16 +500,15 @@ export const StorageService = {
     } else {
       configs.push(config);
     }
+
+    cachedConfigs = configs;
+
     if (typeof window !== "undefined") {
       try {
         localStorage.setItem("ai_study_configs", JSON.stringify(configs));
       } catch {}
     } else {
-      ensureDataDir();
-      cachedConfigs = configs;
-      try {
-        fs.writeFileSync(AI_CONFIG_FILE, JSON.stringify(configs, null, 2), "utf8");
-      } catch {}
+      safeWriteFile("ai_config.json", JSON.stringify(configs, null, 2));
     }
   },
 };

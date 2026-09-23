@@ -39,20 +39,56 @@ export default function PaperEditorPage() {
   // Fetch paper
   useEffect(() => {
     async function loadPaper() {
+      // 1. Check local storage first
+      let foundLocal: QuestionPaper | null = null;
+      try {
+        const local = localStorage.getItem("ai_study_papers");
+        if (local) {
+          const list: QuestionPaper[] = JSON.parse(local);
+          foundLocal = list.find((p) => p.id === paperId) || null;
+          if (foundLocal) {
+            setPaper(foundLocal);
+            setHistory([foundLocal]);
+            setHistoryIndex(0);
+            if (foundLocal.sections?.[0]?.questions?.[0]) {
+              setSelectedQuestionId(foundLocal.sections[0].questions[0].id);
+            }
+          }
+        }
+      } catch {}
+
+      // 2. Fetch from server API
       try {
         const res = await fetch(`/api/papers/${paperId}`);
-        if (!res.ok) throw new Error("Paper not found");
-        const data = await res.json();
-        setPaper(data.paper);
-        setHistory([data.paper]);
-        setHistoryIndex(0);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.paper) {
+            setPaper(data.paper);
+            setHistory([data.paper]);
+            setHistoryIndex(0);
 
-        // Pre-select first question
-        if (data.paper.sections?.[0]?.questions?.[0]) {
-          setSelectedQuestionId(data.paper.sections[0].questions[0].id);
+            // Update localStorage
+            try {
+              const local = localStorage.getItem("ai_study_papers");
+              const list: QuestionPaper[] = local ? JSON.parse(local) : [];
+              const updated = [data.paper, ...list.filter((p) => p.id !== data.paper.id)];
+              localStorage.setItem("ai_study_papers", JSON.stringify(updated));
+            } catch {}
+
+            // Pre-select first question
+            if (data.paper.sections?.[0]?.questions?.[0]) {
+              setSelectedQuestionId(data.paper.sections[0].questions[0].id);
+            }
+            return;
+          }
+        }
+        if (!foundLocal) {
+          throw new Error("Paper not found");
         }
       } catch (err: any) {
-        error(err.message || "Failed to load paper");
+        if (!foundLocal) {
+          error(err.message || "Failed to load paper");
+        }
       } finally {
         setLoading(false);
       }
@@ -60,11 +96,24 @@ export default function PaperEditorPage() {
     if (paperId) loadPaper();
   }, [paperId]);
 
-  // Debounced Autosave to API
+  // Debounced Autosave to API & localStorage
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const savePaperToServer = useCallback(
     async (updatedPaper: QuestionPaper) => {
       setIsSaving(true);
+      // Immediately persist to localStorage
+      try {
+        const local = localStorage.getItem("ai_study_papers");
+        const list: QuestionPaper[] = local ? JSON.parse(local) : [];
+        const idx = list.findIndex((p) => p.id === updatedPaper.id);
+        if (idx >= 0) {
+          list[idx] = updatedPaper;
+        } else {
+          list.unshift(updatedPaper);
+        }
+        localStorage.setItem("ai_study_papers", JSON.stringify(list));
+      } catch {}
+
       try {
         await fetch(`/api/papers/${updatedPaper.id}`, {
           method: "PUT",
@@ -72,7 +121,7 @@ export default function PaperEditorPage() {
           body: JSON.stringify(updatedPaper),
         });
       } catch (err) {
-        console.error("Autosave failed:", err);
+        console.warn("Server autosave skipped, saved locally:", err);
       } finally {
         setIsSaving(false);
       }

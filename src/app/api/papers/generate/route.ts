@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { PaperGenerationConfig, QuestionPaper } from "@/types/paper";
+import { AIProviderConfig, PaperGenerationConfig, QuestionPaper } from "@/types/paper";
 import { StorageService } from "@/lib/storage";
 import { AIProviderRegistry } from "@/lib/ai/providers";
 import { buildSystemPrompt, buildUserPrompt } from "@/lib/ai/promptBuilder";
@@ -20,9 +20,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing paper generation configuration" }, { status: 400 });
     }
 
-    // Check for configured AI Provider
-    const configs = StorageService.getAIConfigs();
-    const activeConfig = configs.find((c) => c.isActive && c.apiKey.trim().length > 0) || null;
+    // Check for configured AI Provider (client-provided or server-stored)
+    let activeConfig: AIProviderConfig | null = null;
+    if (body.aiConfig && body.aiConfig.apiKey && body.aiConfig.apiKey.trim().length > 0) {
+      activeConfig = body.aiConfig;
+    } else {
+      const configs = StorageService.getAIConfigs();
+      activeConfig = configs.find((c) => c.isActive && c.apiKey.trim().length > 0) || null;
+    }
 
     let generatedOutput: GeneratedPaperOutput | null = null;
     let providerUsed = "Local Grounded Engine";

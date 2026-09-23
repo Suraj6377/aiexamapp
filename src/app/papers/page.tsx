@@ -40,12 +40,32 @@ export default function MyPapersPage() {
   const [renameValue, setRenameValue] = useState("");
 
   const loadPapers = async () => {
+    // 1. Initial hydration from localStorage
+    try {
+      const local = localStorage.getItem("ai_study_papers");
+      if (local) {
+        const parsed = JSON.parse(local);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setPapers(parsed);
+        }
+      }
+    } catch {}
+
+    // 2. Fetch from server API
     try {
       const res = await fetch("/api/papers");
-      const data = await res.json();
-      setPapers(data.papers || []);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.papers) && data.papers.length > 0) {
+          setPapers(data.papers);
+          try {
+            localStorage.setItem("ai_study_papers", JSON.stringify(data.papers));
+          } catch {}
+          return;
+        }
+      }
     } catch (err: any) {
-      error("Failed to load papers library");
+      console.warn("Could not reach /api/papers, using cached papers", err);
     } finally {
       setLoading(false);
     }
