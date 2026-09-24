@@ -1,8 +1,18 @@
 import { PaperGenerationConfig } from "@/types/paper";
 
 export function buildSystemPrompt(config: PaperGenerationConfig): string {
-  const isStrict = config.advancedOptions.strictSourceOnly;
-  const allowExternal = config.advancedOptions.allowExternalKnowledge;
+  const adv = config.advancedOptions || {
+    strictSourceOnly: true,
+    allowExternalKnowledge: false,
+    avoidDuplicates: true,
+    balanceDifficulty: true,
+    balanceChapterCoverage: true,
+    generateAnswerKey: true,
+    generateExplanations: true,
+  };
+
+  const isStrict = adv.strictSourceOnly;
+  const allowExternal = adv.allowExternalKnowledge;
 
   let knowledgePolicy = "";
   if (isStrict && !allowExternal) {
@@ -57,11 +67,11 @@ ${knowledgePolicy}
 ${languagePolicy}
 
 ADVANCED INSTRUCTIONS:
-- Avoid duplicate questions or repetitive phrasing: ${config.advancedOptions.avoidDuplicates}
-- Balance difficulty across Easy, Medium, and Hard: ${config.advancedOptions.balanceDifficulty}
-- Balance chapter coverage evenly: ${config.advancedOptions.balanceChapterCoverage}
-- Generate comprehensive answer keys and marking guidance: ${config.advancedOptions.generateAnswerKey}
-- Generate clear explanations: ${config.advancedOptions.generateExplanations}
+- Avoid duplicate questions or repetitive phrasing: ${adv.avoidDuplicates ?? true}
+- Balance difficulty across Easy, Medium, and Hard: ${adv.balanceDifficulty ?? true}
+- Balance chapter coverage evenly: ${adv.balanceChapterCoverage ?? true}
+- Generate comprehensive answer keys and marking guidance: ${adv.generateAnswerKey ?? true}
+- Generate clear explanations: ${adv.generateExplanations ?? true}
 
 FORMAT SPECIFICATION:
 You must respond with ONLY a single valid JSON object adhering strictly to this schema:
@@ -104,11 +114,13 @@ DO NOT include markdown backticks or explanations outside the JSON. Return only 
 }
 
 export function buildUserPrompt(config: PaperGenerationConfig, sourceText: string): string {
-  const selectedChaptersText = config.selectedChapters.length > 0
-    ? config.selectedChapters.map((c) => `- Chapter: ${c.chapterName}\n  Topics: ${c.topics.join(", ")}`).join("\n")
+  const selectedChaptersText = (config.selectedChapters && config.selectedChapters.length > 0)
+    ? config.selectedChapters.map((c) => `- Chapter: ${c.chapterName}\n  Topics: ${c.topics?.join(", ") || ""}`).join("\n")
     : "All detected topics in the source text.";
 
-  const questionTypesText = config.questionTypes.join(", ");
+  const questionTypesText = (config.questionTypes && config.questionTypes.length > 0)
+    ? config.questionTypes.join(", ")
+    : "MCQ, Short Answer, Long Answer";
 
   return `Generate a question paper with the following exact parameters:
 

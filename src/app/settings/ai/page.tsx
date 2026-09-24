@@ -32,12 +32,15 @@ interface ModelInfo {
 }
 
 const OPENROUTER_RECOMMENDED = [
+  { id: "nex-agi/nex-n2.5-mini:free", label: "Nex-N2.5 Mini", tag: "Free Tier" },
+  { id: "nex-agi/nex-n2.5-pro:free", label: "Nex-N2.5 Pro", tag: "Free Tier" },
+  { id: "z-ai/glm-5.2:free", label: "GLM 5.2", tag: "Free Tier" },
+  { id: "qwen/qwen3.8-27b:free", label: "Qwen 3.8 27B", tag: "Free Tier" },
   { id: "anthropic/claude-3.5-sonnet", label: "Claude 3.5 Sonnet", tag: "Smartest" },
   { id: "openai/gpt-4o-mini", label: "GPT-4o Mini", tag: "Fast & Economical" },
   { id: "deepseek/deepseek-r1", label: "DeepSeek R1", tag: "Reasoning" },
   { id: "meta-llama/llama-3.3-70b-instruct", label: "Llama 3.3 70B", tag: "Open Source" },
   { id: "google/gemini-2.0-flash-001", label: "Gemini 2.0 Flash", tag: "Ultra Fast" },
-  { id: "qwen/qwen-2.5-72b-instruct", label: "Qwen 2.5 72B", tag: "Multilingual" },
 ];
 
 const GEMINI_RECOMMENDED = [

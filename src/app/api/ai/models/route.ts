@@ -4,17 +4,37 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   try {
-    const { provider, apiKey, baseUrl } = await req.json();
+    let { provider, apiKey, baseUrl } = await req.json();
 
     if (!provider) {
       return NextResponse.json({ error: "Provider is required" }, { status: 400 });
     }
 
+    // Resolve unmasked API key from storage or env if client sent masked key
+    let resolvedApiKey = apiKey;
+    if (!resolvedApiKey || resolvedApiKey.includes("••••")) {
+      try {
+        const { StorageService } = await import("@/lib/storage");
+        const serverConfigs = await StorageService.getAIConfigs();
+        const matched = serverConfigs.find((c) => c.provider === provider);
+        if (matched?.apiKey && !matched.apiKey.includes("••••")) {
+          resolvedApiKey = matched.apiKey;
+        }
+      } catch {}
+    }
+    if (!resolvedApiKey || resolvedApiKey.includes("••••")) {
+      if (provider === "openrouter") resolvedApiKey = process.env.OPENROUTER_API_KEY || "";
+      if (provider === "gemini") resolvedApiKey = process.env.GEMINI_API_KEY || "";
+      if (provider === "openai") resolvedApiKey = process.env.OPENAI_API_KEY || "";
+      if (provider === "anthropic") resolvedApiKey = process.env.ANTHROPIC_API_KEY || "";
+      if (provider === "groq") resolvedApiKey = process.env.GROQ_API_KEY || "";
+    }
+
     // 1. OpenRouter Models
     if (provider === "openrouter" || (baseUrl && baseUrl.includes("openrouter.ai"))) {
       const headers: Record<string, string> = {};
-      if (apiKey) {
-        headers["Authorization"] = `Bearer ${apiKey}`;
+      if (resolvedApiKey && !resolvedApiKey.includes("••••")) {
+        headers["Authorization"] = `Bearer ${resolvedApiKey}`;
       }
 
       const res = await fetch("https://openrouter.ai/api/v1/models", {
