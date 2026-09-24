@@ -12,6 +12,7 @@ export class OpenAICompatibleProvider implements AIProvider {
   async generateText(params: GenerateParams): Promise<string> {
     const baseUrl = (params.baseUrl || this.defaultBaseUrl).replace(/\/+$/, "");
     const url = `${baseUrl}/chat/completions`;
+    const isOpenRouter = this.name === "OpenRouter" || baseUrl.includes("openrouter.ai");
 
     const messages = [];
     if (params.systemPrompt) {
@@ -19,39 +20,89 @@ export class OpenAICompatibleProvider implements AIProvider {
     }
     messages.push({ role: "user", content: params.prompt });
 
-    const body: any = {
-      model: params.model,
-      messages,
-      temperature: params.temperature ?? 0.3,
-      max_tokens: params.maxTokens ?? 4096,
-      response_format: { type: "json_object" },
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${params.apiKey}`,
     };
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${params.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
+    if (isOpenRouter) {
+      headers["HTTP-Referer"] = "https://aiexamapp.vercel.app";
+      headers["X-Title"] = "AI Exam Paper Generator";
+    }
 
-    if (!res.ok) {
-      const errorText = await res.text();
-      let msg = `${this.name} API Error (${res.status})`;
+    // Prepare candidate models for OpenRouter free tier fallback
+    const candidateModels: string[] = [params.model];
+    if (isOpenRouter) {
+      const freeFallbacks = [
+        "liquid/lfm-2.5-2.6b:free",
+        "nex-agi/nex-n2.5-mini:free",
+        "nex-agi/nex-n2.5-pro:free",
+        "google/gemma-4-31b-it:free",
+      ];
+      for (const fb of freeFallbacks) {
+        if (!candidateModels.includes(fb)) {
+          candidateModels.push(fb);
+        }
+      }
+    }
+
+    let lastError: Error | null = null;
+
+    for (const modelToTry of candidateModels) {
       try {
-        const errJson = JSON.parse(errorText);
-        msg = errJson?.error?.message || msg;
-      } catch {}
-      throw new Error(msg);
+        const body: any = {
+          model: modelToTry,
+          messages,
+          temperature: params.temperature ?? 0.3,
+          max_tokens: Math.max(params.maxTokens ?? 4096, 6144),
+        };
+
+        // Only enforce response_format for official OpenAI models
+        if (this.name === "OpenAI" && !isOpenRouter) {
+          body.response_format = { type: "json_object" };
+        }
+
+        const res = await fetch(url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        });
+
+        if (!res.ok) {
+          const errorText = await res.text();
+          let msg = `${this.name} API Error (${res.status})`;
+          try {
+            const errJson = JSON.parse(errorText);
+            msg = errJson?.error?.metadata?.raw || errJson?.error?.message || msg;
+          } catch {}
+
+          // If rate-limited (429) or provider error, try next candidate model
+          if (res.status === 429 || res.status === 502 || res.status === 503 || msg.includes("Provider returned error") || msg.includes("rate-limit")) {
+            console.warn(`[OpenAICompatibleProvider] Model ${modelToTry} rate-limited/failed: ${msg}. Trying next candidate...`);
+            lastError = new Error(msg);
+            continue;
+          }
+          throw new Error(msg);
+        }
+
+        const data = await res.json();
+        const content = data.choices?.[0]?.message?.content;
+        if (!content || content.trim().length === 0) {
+          // If empty content (e.g. reasoning model exhausted tokens), try next candidate
+          console.warn(`[OpenAICompatibleProvider] Model ${modelToTry} returned empty content. Trying fallback...`);
+          lastError = new Error(`No content returned by model ${modelToTry}`);
+          continue;
+        }
+
+        return content;
+      } catch (err: any) {
+        lastError = err;
+        // If not a network/model issue, rethrow
+        if (!isOpenRouter) throw err;
+      }
     }
 
-    const data = await res.json();
-    const content = data.choices?.[0]?.message?.content;
-    if (!content) {
-      throw new Error(`No content returned by ${this.name}`);
-    }
-    return content;
+    throw lastError || new Error(`No content returned by ${this.name}`);
   }
 
   async testConnection(params: { apiKey: string; baseUrl?: string; model?: string }): Promise<{ success: boolean; message: string }> {

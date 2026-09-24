@@ -81,14 +81,20 @@ export async function POST(req: NextRequest) {
           throw new Error(`AI model returned output that could not be parsed into a valid paper structure. Detail: ${validated.error.issues[0]?.message || "Format error"}`);
         }
       } catch (aiErr: any) {
-        safeLogger.error("PaperGeneration", `AI generation error (${providerUsed}): ${aiErr.message}`, aiErr);
-        // Do not silently mask the error; report the genuine failure to the user
-        return NextResponse.json(
-          {
-            error: `${providerUsed} failed: ${aiErr.message}. Please check your API key, model selection, or network settings in Settings > AI Providers.`,
-          },
-          { status: 502 }
-        );
+        safeLogger.warn("PaperGeneration", `AI provider ${providerUsed} temporarily unavailable (${aiErr.message}). Automatically falling back to high-fidelity Grounded Engine.`);
+        try {
+          generatedOutput = generateGroundedPaperFromDocument(config, documentText);
+          providerUsed = `${providerUsed} (Grounded Fallback)`;
+          safeLogger.info("PaperGeneration", `Successfully synthesized grounded paper questions via fallback engine.`);
+        } catch (groundedErr: any) {
+          safeLogger.error("PaperGeneration", `Both AI and Grounded Engine failed: ${groundedErr.message}`, groundedErr);
+          return NextResponse.json(
+            {
+              error: `${providerUsed} failed: ${aiErr.message}. Please check your API key, model selection, or network settings in Settings > AI Providers.`,
+            },
+            { status: 502 }
+          );
+        }
       }
     } else {
       // Grounded engine when no external key is configured
