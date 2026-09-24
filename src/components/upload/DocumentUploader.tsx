@@ -17,6 +17,8 @@ import {
 } from "lucide-react";
 import { DocumentMetadata } from "@/types/paper";
 import { useToast } from "../providers/ToastProvider";
+import { extractTextFromPdfInBrowser } from "@/lib/documents/clientPdfParser";
+import { optimizeImageForUpload } from "@/lib/documents/clientImageOptimizer";
 
 interface DocumentUploaderProps {
   onDocumentProcessed: (metadata: DocumentMetadata) => void;
@@ -72,6 +74,8 @@ export function DocumentUploader({ onDocumentProcessed }: DocumentUploaderProps)
     }
   };
 
+  const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB limit matching UI guarantee
+
   const handleFileSelected = async (file: File) => {
     const validExtensions = [".pdf", ".txt", ".png", ".jpg", ".jpeg"];
     const ext = "." + file.name.split(".").pop()?.toLowerCase();
@@ -80,8 +84,8 @@ export function DocumentUploader({ onDocumentProcessed }: DocumentUploaderProps)
       return;
     }
 
-    if (file.size > 4.5 * 1024 * 1024) {
-      error("File size exceeds 4.5 MB limit for serverless direct upload. Please upload a smaller file or paste text directly.", "File Too Large");
+    if (file.size > MAX_FILE_SIZE) {
+      error("File size exceeds 25 MB limit. Please upload a file under 25 MB or paste text directly.", "File Too Large");
       return;
     }
 
@@ -92,31 +96,184 @@ export function DocumentUploader({ onDocumentProcessed }: DocumentUploaderProps)
   const processFile = async (file: File) => {
     setIsProcessing(true);
     setCurrentStep("uploading");
-    setProgressPercent(20);
+    setProgressPercent(15);
 
+    const ext = "." + file.name.split(".").pop()?.toLowerCase();
+    const isPdf = ext === ".pdf" || file.type.includes("pdf");
     const isImage = file.type.startsWith("image/");
-    const endpoint = isImage ? "/api/documents/ocr" : "/api/documents/parse";
-
-    const timeouts: NodeJS.Timeout[] = [];
-    timeouts.push(setTimeout(() => { setCurrentStep("reading"); setProgressPercent(40); }, 600));
-    if (isImage) {
-      timeouts.push(setTimeout(() => { setCurrentStep("ocr"); setProgressPercent(65); }, 1200));
-    } else {
-      timeouts.push(setTimeout(() => { setCurrentStep("extracting"); setProgressPercent(60); }, 1000));
-      timeouts.push(setTimeout(() => { setCurrentStep("chapters"); setProgressPercent(80); }, 1800));
-    }
+    const isTxt = ext === ".txt" || file.type.includes("text");
 
     try {
+      // 1. PDF File Processing (Client-side extraction up to 25 MB)
+      if (isPdf) {
+        setCurrentStep("reading");
+        setProgressPercent(30);
+
+        let pdfResult;
+        try {
+          pdfResult = await extractTextFromPdfInBrowser(file, (percent, msg) => {
+            setProgressPercent(percent);
+          });
+        } catch (pdfErr) {
+          console.warn("Client PDF extraction encountered an issue, checking server fallback:", pdfErr);
+          if (file.size > 4.5 * 1024 * 1024) {
+            throw new Error(
+              "Unable to parse text from this PDF file in browser. Please verify the document is not password protected or corrupted."
+            );
+          }
+        }
+
+        if (pdfResult) {
+          if (pdfResult.isScanned && (!pdfResult.text || pdfResult.text.length < 30)) {
+            // Scanned PDF (image-only pages)
+            if (pdfResult.firstPageBlob) {
+              setCurrentStep("ocr");
+              setProgressPercent(55);
+              info("Scanned PDF detected. Running OCR on document...", "Optical Character Recognition");
+
+              const formData = new FormData();
+              formData.append("file", pdfResult.firstPageBlob, file.name.replace(/\.pdf$/i, ".jpg"));
+
+              const ocrRes = await fetch("/api/documents/ocr", {
+                method: "POST",
+                body: formData,
+              });
+
+              if (!ocrRes.ok) {
+                const errData = await ocrRes.json().catch(() => ({}));
+                throw new Error(errData.error || "OCR failed on scanned PDF");
+              }
+
+              const ocrData = await ocrRes.json();
+              if (!ocrData.document) throw new Error("Invalid document metadata received from OCR");
+
+              ocrData.document.name = file.name;
+              ocrData.document.size = file.size;
+              ocrData.document.pageCount = pdfResult.pageCount;
+
+              setCurrentStep("ready");
+              setProgressPercent(100);
+              setDocumentMetadata(ocrData.document);
+              success("Scanned PDF read via OCR and grounded topics detected!", "Analysis Complete");
+              return;
+            } else {
+              throw new Error("No digital text found in this PDF. It appears to be an image-only scan.");
+            }
+          }
+
+          // Digital PDF text extracted successfully!
+          setCurrentStep("extracting");
+          setProgressPercent(80);
+
+          const res = await fetch("/api/documents/parse", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              text: pdfResult.text,
+              fileName: file.name,
+              fileSize: file.size,
+              fileType: "application/pdf",
+              pageCount: pdfResult.pageCount,
+            }),
+          });
+
+          if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.error || `Processing failed with status ${res.status}`);
+          }
+
+          const data = await res.json();
+          if (!data.document) {
+            throw new Error("Invalid document metadata received from server");
+          }
+
+          setCurrentStep("ready");
+          setProgressPercent(100);
+          setDocumentMetadata(data.document);
+          success("Document analyzed and grounded topics detected!", "Analysis Complete");
+          return;
+        }
+      }
+
+      // 2. Plain Text File Processing
+      if (isTxt) {
+        setCurrentStep("reading");
+        setProgressPercent(30);
+        const text = await file.text();
+        setCurrentStep("extracting");
+        setProgressPercent(80);
+
+        const res = await fetch("/api/documents/parse", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text,
+            fileName: file.name,
+            fileSize: file.size,
+            fileType: "text/plain",
+            pageCount: 1,
+          }),
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `Processing failed with status ${res.status}`);
+        }
+
+        const data = await res.json();
+        if (!data.document) throw new Error("Invalid document metadata received from server");
+
+        setCurrentStep("ready");
+        setProgressPercent(100);
+        setDocumentMetadata(data.document);
+        success("Document analyzed and grounded topics detected!", "Analysis Complete");
+        return;
+      }
+
+      // 3. Image File Processing with auto-compression
+      if (isImage) {
+        setCurrentStep("reading");
+        setProgressPercent(25);
+
+        let uploadFile: File | Blob = file;
+        if (file.size > 3.5 * 1024 * 1024) {
+          uploadFile = await optimizeImageForUpload(file);
+        }
+
+        setCurrentStep("ocr");
+        setProgressPercent(60);
+
+        const formData = new FormData();
+        formData.append("file", uploadFile, file.name);
+
+        const res = await fetch("/api/documents/ocr", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `OCR failed with status ${res.status}`);
+        }
+
+        const data = await res.json();
+        if (!data.document) throw new Error("Invalid document metadata received from OCR");
+
+        setCurrentStep("ready");
+        setProgressPercent(100);
+        setDocumentMetadata(data.document);
+        success("Image analyzed and grounded topics detected!", "Analysis Complete");
+        return;
+      }
+
+      // 4. Default Server Direct Upload for files <= 4.5 MB
       const formData = new FormData();
       formData.append("file", file);
 
-      const res = await fetch(endpoint, {
+      const res = await fetch("/api/documents/parse", {
         method: "POST",
         body: formData,
       });
-
-      // Clear all speculative step timeouts
-      timeouts.forEach(clearTimeout);
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
@@ -133,7 +290,6 @@ export function DocumentUploader({ onDocumentProcessed }: DocumentUploaderProps)
       setDocumentMetadata(data.document);
       success("Document analyzed and grounded topics detected!", "Analysis Complete");
     } catch (err: any) {
-      timeouts.forEach(clearTimeout);
       console.error("Document processing error:", err);
       setCurrentStep("idle");
       setProgressPercent(0);
@@ -331,7 +487,10 @@ export function DocumentUploader({ onDocumentProcessed }: DocumentUploaderProps)
                   </span>
                 </h4>
                 <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                  {(documentMetadata.size / 1024).toFixed(1)} KB • {documentMetadata.pageCount} page(s) • Grounded
+                  {documentMetadata.size >= 1024 * 1024
+                    ? `${(documentMetadata.size / (1024 * 1024)).toFixed(1)} MB`
+                    : `${(documentMetadata.size / 1024).toFixed(1)} KB`}{" "}
+                  • {documentMetadata.pageCount} page(s) • Grounded
                 </p>
               </div>
             </div>

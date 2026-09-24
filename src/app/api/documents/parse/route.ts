@@ -8,55 +8,70 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   try {
-    const formData = await req.formData();
-    const file = formData.get("file") as File | null;
-    const manualText = formData.get("text") as string | null;
-
     let extractedText = "";
     let fileName = "Uploaded Document";
     let fileSize = 0;
     let fileType = "text/plain";
     let pageCount = 1;
 
-    if (file) {
-      fileName = file.name;
-      fileSize = file.size;
-      fileType = file.type || "application/octet-stream";
+    const contentType = req.headers.get("content-type") || "";
 
-      if (fileSize > 4.5 * 1024 * 1024) {
-        return NextResponse.json(
-          { error: `File size (${(fileSize / (1024 * 1024)).toFixed(1)} MB) exceeds Vercel 4.5 MB serverless limit.` },
-          { status: 413 }
-        );
-      }
-
-      safeLogger.info("DocumentParse:API", `Parsing file: ${fileName} (${fileSize} bytes, type: ${fileType})`);
-      const bytes = await file.arrayBuffer();
-      const buffer = Buffer.from(bytes);
-
-      if (file.name.toLowerCase().endsWith(".pdf") || fileType.includes("pdf")) {
-        const parsed = await parsePdfBuffer(buffer);
-        extractedText = parsed.text;
-        pageCount = parsed.pageCount;
-      } else if (fileType.startsWith("image/")) {
-        // Return image info for OCR step
-        return NextResponse.json({
-          requiresOcr: true,
-          fileName,
-          fileSize,
-          fileType,
-          message: "Image document detected. Please run OCR to extract text.",
-        });
-      } else {
-        // Plain text, markdown, or code
-        extractedText = buffer.toString("utf8");
-      }
-    } else if (manualText) {
-      extractedText = manualText;
-      fileSize = manualText.length;
-      safeLogger.info("DocumentParse:API", `Parsing manual text (${manualText.length} characters)`);
+    if (contentType.includes("application/json")) {
+      const body = await req.json();
+      extractedText = body.text || "";
+      fileName = body.fileName || "Uploaded Document";
+      fileSize = Number(body.fileSize) || extractedText.length;
+      fileType = body.fileType || "application/pdf";
+      pageCount = Number(body.pageCount) || 1;
+      safeLogger.info("DocumentParse:API", `Parsing extracted JSON text for ${fileName} (${extractedText.length} chars, size: ${fileSize})`);
     } else {
-      return NextResponse.json({ error: "No file or text provided for analysis" }, { status: 400 });
+      const formData = await req.formData();
+      const file = formData.get("file") as File | null;
+      const manualText = formData.get("text") as string | null;
+
+      if (file) {
+        fileName = file.name;
+        fileSize = file.size;
+        fileType = file.type || "application/octet-stream";
+
+        if (fileSize > 4.5 * 1024 * 1024) {
+          return NextResponse.json(
+            { error: `File size (${(fileSize / (1024 * 1024)).toFixed(1)} MB) exceeds serverless direct upload limit. Please use client extraction or paste text.` },
+            { status: 413 }
+          );
+        }
+
+        safeLogger.info("DocumentParse:API", `Parsing file: ${fileName} (${fileSize} bytes, type: ${fileType})`);
+        const bytes = await file.arrayBuffer();
+        const buffer = Buffer.from(bytes);
+
+        if (file.name.toLowerCase().endsWith(".pdf") || fileType.includes("pdf")) {
+          const parsed = await parsePdfBuffer(buffer);
+          extractedText = parsed.text;
+          pageCount = parsed.pageCount;
+        } else if (fileType.startsWith("image/")) {
+          return NextResponse.json({
+            requiresOcr: true,
+            fileName,
+            fileSize,
+            fileType,
+            message: "Image document detected. Please run OCR to extract text.",
+          });
+        } else {
+          extractedText = buffer.toString("utf8");
+        }
+      } else if (manualText) {
+        extractedText = manualText;
+        fileName = (formData.get("fileName") as string) || "Uploaded Document";
+        const customSize = parseInt(formData.get("fileSize") as string, 10);
+        fileSize = Number.isFinite(customSize) && customSize > 0 ? customSize : manualText.length;
+        fileType = (formData.get("fileType") as string) || "application/pdf";
+        const customPages = parseInt(formData.get("pageCount") as string, 10);
+        pageCount = Number.isFinite(customPages) && customPages > 0 ? customPages : 1;
+        safeLogger.info("DocumentParse:API", `Parsing extracted text for ${fileName} (${manualText.length} chars, reported size: ${fileSize})`);
+      } else {
+        return NextResponse.json({ error: "No file or text provided for analysis" }, { status: 400 });
+      }
     }
 
     const trimmed = (extractedText || "").trim();
