@@ -18,6 +18,7 @@ import { QuestionPaper } from "@/types/paper";
  */
 export async function generateDocxBlob(paper: QuestionPaper, includeAnswerKey = false): Promise<Blob> {
   const children: any[] = [];
+  const baseFont = paper.styling?.fontFamily === "Kruti Dev 010" ? "Kruti Dev 010" : (paper.styling?.fontFamily || "Calibri");
 
   // 1. Institution Header
   if (paper.header.institutionName) {
@@ -30,7 +31,7 @@ export async function generateDocxBlob(paper: QuestionPaper, includeAnswerKey = 
             text: paper.header.institutionName.toUpperCase(),
             bold: true,
             size: 32, // 16pt
-            font: "Calibri",
+            font: baseFont,
           }),
         ],
       })
@@ -47,7 +48,7 @@ export async function generateDocxBlob(paper: QuestionPaper, includeAnswerKey = 
           text: paper.header.examName || paper.title,
           bold: true,
           size: 26, // 13pt
-          font: "Calibri",
+          font: baseFont,
         }),
       ],
     })
@@ -203,16 +204,16 @@ export async function generateDocxBlob(paper: QuestionPaper, includeAnswerKey = 
                   new Paragraph({
                     spacing: { before: 120, after: 60 },
                     children: [
-                      new TextRun({ text: `Q${qNum}. `, bold: true }),
-                      new TextRun({ text: q.question }),
+                      new TextRun({ text: `Q${qNum}. `, bold: true, font: baseFont }),
+                      new TextRun({ text: q.question, font: baseFont }),
                     ],
                   }),
-                  ...(q.hindiQuestion
+                  ...((q.hindiQuestion || q.hindiText)
                     ? [
                         new Paragraph({
                           spacing: { after: 60 },
                           indent: { left: 360 },
-                          children: [new TextRun({ text: q.hindiQuestion, italics: true, color: "333333" })],
+                          children: [new TextRun({ text: (q.hindiQuestion || q.hindiText)!, italics: true, color: "333333", font: baseFont })],
                         }),
                       ]
                     : []),

@@ -42,8 +42,9 @@ export function triggerPaperPrint(paper: QuestionPaper, printElementId = "paper-
         padding: 0 !important;
         -webkit-print-color-adjust: exact !important;
         print-color-adjust: exact !important;
+        ${paper.styling.fontFamily === "Kruti Dev 010" ? "font-family: 'Kruti Dev 010', 'KrutiDev010', sans-serif !important;" : ""}
       }
-      .no-print, nav, aside, header, footer, button, .editor-sidebar, .editor-inspector {
+      .no-print, nav, aside, header, footer, button, .editor-sidebar, .editor-inspector, .drag-handle {
         display: none !important;
       }
       #paper-printable-area {
@@ -60,6 +61,7 @@ export function triggerPaperPrint(paper: QuestionPaper, printElementId = "paper-
         margin: 0 0 20px 0 !important;
         page-break-after: always;
         break-after: page;
+        ${paper.styling.fontFamily === "Kruti Dev 010" ? "font-family: 'Kruti Dev 010', 'KrutiDev010', sans-serif !important;" : ""}
       }
       .question-block {
         page-break-inside: avoid;

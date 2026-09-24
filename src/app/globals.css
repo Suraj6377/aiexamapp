@@ -126,6 +126,21 @@ html, body {
   -webkit-overflow-scrolling: touch;
 }
 
+/* Kruti Dev 010 Hindi Font Definition */
+@font-face {
+  font-family: 'Kruti Dev 010';
+  src: local('Kruti Dev 010'), local('KrutiDev010'), local('Kruti_Dev_010'),
+       url('https://fonts.cdnfonts.com/s/98555/KrutiDev010.woff') format('woff'),
+       url('https://db.onlinewebfonts.com/t/2c8b746813b56743e3f4fc4ba3f42654.woff2') format('woff2');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+.font-kruti {
+  font-family: 'Kruti Dev 010', 'KrutiDev010', 'Noto Sans Devanagari', sans-serif !important;
+}
+
 /* Print optimizations */
 @media print {
   @page {
@@ -135,7 +150,7 @@ html, body {
     background: #ffffff !important;
     color: #000000 !important;
   }
-  .no-print, aside, header, nav, button {
+  .no-print, aside, header, nav, button, .editor-toolbar, .editor-sidebar, .editor-inspector {
     display: none !important;
   }
 }

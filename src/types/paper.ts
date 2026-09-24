@@ -37,6 +37,7 @@ export interface Question {
   number?: number;
   question: string;
   hindiQuestion?: string;
+  hindiText?: string;
   type: QuestionType;
   marks: number;
   difficulty: DifficultyLevel;
@@ -100,9 +101,11 @@ export interface MarginsConfig {
   right: number;
 }
 
+export type PaperFontFamily = "Inter" | "Arial" | "Times New Roman" | "Georgia" | "Noto Sans" | "Noto Serif" | "Kruti Dev 010" | string;
+
 export interface StylingConfig {
   paperSize: PaperSize;
-  fontFamily: "Inter" | "Arial" | "Times New Roman" | "Georgia" | "Noto Sans" | "Noto Serif";
+  fontFamily: PaperFontFamily;
   fontSize: number; // base font size in pt, e.g. 11
   lineHeight: number; // e.g. 1.4
   questionSpacing: number; // in mm/pt

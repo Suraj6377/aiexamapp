@@ -22,6 +22,7 @@ export default function PaperEditorPage() {
   const [loading, setLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [showAnswerKey, setShowAnswerKey] = useState(false);
+  const [isFullEditMode, setIsFullEditMode] = useState(false);
 
   // Mobile navigation tab state: "canvas" | "outline" | "inspector"
   const [activeMobileTab, setActiveMobileTab] = useState<"canvas" | "outline" | "inspector">("canvas");
@@ -274,6 +275,8 @@ export default function PaperEditorPage() {
         isSaving={isSaving}
         showAnswerKey={showAnswerKey}
         onToggleAnswerKey={() => setShowAnswerKey(!showAnswerKey)}
+        isFullEditMode={isFullEditMode}
+        onToggleFullEditMode={() => setIsFullEditMode(!isFullEditMode)}
       />
 
       {/* Mobile Tab Switcher (< lg screens) */}
@@ -359,6 +362,9 @@ export default function PaperEditorPage() {
             onSelectSection={handleSelectSection}
             onSelectHeader={handleSelectHeader}
             showAnswerKey={showAnswerKey}
+            isFullEditMode={isFullEditMode}
+            onToggleFullEditMode={() => setIsFullEditMode(!isFullEditMode)}
+            onUpdatePaper={handleUpdatePaper}
           />
         </main>
 

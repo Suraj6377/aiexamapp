@@ -20,10 +20,14 @@ import {
   X,
   Settings2,
   LayoutTemplate,
+  Edit3,
+  RefreshCw,
+  Type,
 } from "lucide-react";
 import { triggerPaperPrint } from "@/lib/export/pdfExporter";
 import { useToast } from "../providers/ToastProvider";
 import { ApplyTemplateModal } from "./ApplyTemplateModal";
+import { unicodeToKrutiDev, krutiDevToUnicode } from "@/lib/utils/krutiDevConverter";
 
 interface DesignToolbarProps {
   paper: QuestionPaper;
@@ -35,6 +39,8 @@ interface DesignToolbarProps {
   isSaving: boolean;
   showAnswerKey: boolean;
   onToggleAnswerKey: () => void;
+  isFullEditMode?: boolean;
+  onToggleFullEditMode?: () => void;
 }
 
 export function DesignToolbar({
@@ -47,6 +53,8 @@ export function DesignToolbar({
   isSaving,
   showAnswerKey,
   onToggleAnswerKey,
+  isFullEditMode = false,
+  onToggleFullEditMode,
 }: DesignToolbarProps) {
   const { success, error, info } = useToast();
   const [showDesignModal, setShowDesignModal] = useState(false);
@@ -99,6 +107,88 @@ export function DesignToolbar({
       error(err.message || "Failed to download DOCX file", "Export Error");
     } finally {
       setIsExportingDocx(false);
+    }
+  };
+
+  const handleBatchConvertToKrutiDev = () => {
+    try {
+      const updatedSections = paper.sections.map((sec) => ({
+        ...sec,
+        title: unicodeToKrutiDev(sec.title),
+        instructions: sec.instructions ? unicodeToKrutiDev(sec.instructions) : sec.instructions,
+        questions: sec.questions.map((q) => ({
+          ...q,
+          hindiQuestion: q.hindiQuestion
+            ? unicodeToKrutiDev(q.hindiQuestion)
+            : q.hindiText
+            ? unicodeToKrutiDev(q.hindiText)
+            : undefined,
+          hindiText: q.hindiText ? unicodeToKrutiDev(q.hindiText) : undefined,
+          options: q.options?.map((opt) => ({
+            ...opt,
+            hindiText: opt.hindiText ? unicodeToKrutiDev(opt.hindiText) : undefined,
+          })),
+        })),
+      }));
+
+      const updatedInstructions = paper.header.generalInstructions.map((ins) =>
+        unicodeToKrutiDev(ins)
+      );
+
+      onUpdatePaper({
+        ...paper,
+        header: {
+          ...paper.header,
+          generalInstructions: updatedInstructions,
+        },
+        sections: updatedSections,
+        styling: {
+          ...paper.styling,
+          fontFamily: "Kruti Dev 010",
+        },
+      });
+      success("Converted all Hindi questions and instructions to Kruti Dev 010!", "Font Converted");
+    } catch (e: any) {
+      error("Failed to convert Hindi text to Kruti Dev: " + e.message);
+    }
+  };
+
+  const handleBatchConvertToUnicode = () => {
+    try {
+      const updatedSections = paper.sections.map((sec) => ({
+        ...sec,
+        title: krutiDevToUnicode(sec.title),
+        instructions: sec.instructions ? krutiDevToUnicode(sec.instructions) : sec.instructions,
+        questions: sec.questions.map((q) => ({
+          ...q,
+          hindiQuestion: q.hindiQuestion
+            ? krutiDevToUnicode(q.hindiQuestion)
+            : q.hindiText
+            ? krutiDevToUnicode(q.hindiText)
+            : undefined,
+          hindiText: q.hindiText ? krutiDevToUnicode(q.hindiText) : undefined,
+          options: q.options?.map((opt) => ({
+            ...opt,
+            hindiText: opt.hindiText ? krutiDevToUnicode(opt.hindiText) : undefined,
+          })),
+        })),
+      }));
+
+      const updatedInstructions = paper.header.generalInstructions.map((ins) =>
+        krutiDevToUnicode(ins)
+      );
+
+      onUpdatePaper({
+        ...paper,
+        header: {
+          ...paper.header,
+          generalInstructions: updatedInstructions,
+        },
+        sections: updatedSections,
+      });
+      success("Converted Kruti Dev 010 back to Standard Unicode Hindi!", "Font Converted");
+    } catch (e: any) {
+      error("Failed to convert Kruti Dev to Unicode: " + e.message);
     }
   };
 
@@ -165,6 +255,7 @@ export function DesignToolbar({
           <option value="Arial">Arial (Sans Serif)</option>
           <option value="Noto Sans">Noto Sans (Bilingual/Hindi)</option>
           <option value="Noto Serif">Noto Serif (Bilingual)</option>
+          <option value="Kruti Dev 010">Kruti Dev 010 (कुर्तिदेव फॉन्ट)</option>
         </select>
 
         {/* Paper Size */}
@@ -188,6 +279,23 @@ export function DesignToolbar({
           <Palette className="w-3.5 h-3.5 text-indigo-500" />
           <span>Layout & Watermark</span>
         </button>
+
+        {/* Full Page Edit Mode Toggle */}
+        {onToggleFullEditMode && (
+          <button
+            type="button"
+            onClick={onToggleFullEditMode}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition shadow-xs ${
+              isFullEditMode
+                ? "bg-purple-600 hover:bg-purple-700 text-white border-purple-600 ring-2 ring-purple-300 dark:ring-purple-900"
+                : "border-purple-200 dark:border-purple-900/60 bg-purple-50/80 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 hover:bg-purple-100 dark:hover:bg-purple-900/50"
+            }`}
+            title="Toggle Full Page In-Place Editing & Drag-and-Drop Question Reordering"
+          >
+            <Edit3 className="w-3.5 h-3.5" />
+            <span>{isFullEditMode ? "Full Edit: ON" : "Full Page Edit"}</span>
+          </button>
+        )}
 
         {/* Apply Template Button */}
         <button
@@ -216,6 +324,22 @@ export function DesignToolbar({
 
       {/* Right: Export buttons & mobile design button */}
       <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+        {/* Mobile Full Page Edit Button */}
+        {onToggleFullEditMode && (
+          <button
+            type="button"
+            onClick={onToggleFullEditMode}
+            className={`lg:hidden p-2 rounded-xl border transition ${
+              isFullEditMode
+                ? "bg-purple-600 border-purple-600 text-white shadow-xs"
+                : "border-purple-200 dark:border-purple-900/60 bg-purple-50/70 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300"
+            }`}
+            title="Full Page Edit Mode"
+          >
+            <Edit3 className="w-4 h-4" />
+          </button>
+        )}
+
         {/* Mobile Apply Template button */}
         <button
           type="button"
@@ -312,6 +436,7 @@ export function DesignToolbar({
                 <option value="Arial">Arial</option>
                 <option value="Noto Sans">Noto Sans</option>
                 <option value="Noto Serif">Noto Serif</option>
+                <option value="Kruti Dev 010">Kruti Dev 010 (कुर्तिदेव)</option>
               </select>
             </div>
 
@@ -422,6 +547,35 @@ export function DesignToolbar({
                 </div>
               </div>
             )}
+          </div>
+
+          {/* Hindi Font & Kruti Dev Converter Section */}
+          <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800 dark:text-slate-200">
+              <Type className="w-3.5 h-3.5 text-indigo-500" />
+              <span>Hindi Font Tools (कुर्तिदेव / यूनिकोड)</span>
+            </div>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              Switch entire paper questions & instructions between Unicode and Kruti Dev 010.
+            </p>
+            <div className="flex flex-col gap-1.5 pt-1">
+              <button
+                type="button"
+                onClick={handleBatchConvertToKrutiDev}
+                className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 text-xs font-semibold hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition shadow-xs"
+              >
+                <RefreshCw className="w-3 h-3 text-indigo-600" />
+                <span>Convert All to Kruti Dev 010</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleBatchConvertToUnicode}
+                className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-600 dark:text-slate-300 text-xs font-medium hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+              >
+                <RefreshCw className="w-3 h-3 text-slate-500" />
+                <span>Convert Kruti Dev to Unicode</span>
+              </button>
+            </div>
           </div>
 
           <button
