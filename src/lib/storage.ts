@@ -150,11 +150,13 @@ const DEFAULT_AI_CONFIGS: AIProviderConfig[] = [
     provider: "gemini",
     name: "Google Gemini",
     apiKey: process.env.GEMINI_API_KEY || "",
-    model: "gemini-2.0-flash",
+    model: "gemini-3.8-flash",
     temperature: 0.3,
     maxTokens: 8192,
     isDefault: true,
     isActive: true,
+    hasKey: true,
+    isEnvConfigured: true,
   },
   {
     id: "cfg_openai",
@@ -213,7 +215,12 @@ function getEnvAIConfigs(): AIProviderConfig[] {
       if (cfg.provider === "groq") key = process.env.GROQ_API_KEY || "";
       if (cfg.provider === "openrouter") key = process.env.OPENROUTER_API_KEY || "";
     }
-    return { ...cfg, apiKey: key };
+    return {
+      ...cfg,
+      apiKey: key,
+      hasKey: Boolean(key && key.trim().length > 0),
+      isEnvConfigured: cfg.provider === "gemini" || Boolean(process.env[`${cfg.provider.toUpperCase()}_API_KEY`]),
+    };
   });
 }
 

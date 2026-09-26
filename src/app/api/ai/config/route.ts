@@ -14,11 +14,22 @@ function maskKey(key?: string): string {
 export async function GET() {
   try {
     const configs = await StorageService.getAIConfigs();
-    const safeConfigs = configs.map((c) => ({
-      ...c,
-      apiKey: maskKey(c.apiKey),
-      hasKey: Boolean(c.apiKey && c.apiKey.trim().length > 0),
-    }));
+    const safeConfigs = configs.map((c) => {
+      const isGemini = c.provider === "gemini";
+      const envKey = isGemini
+        ? (process.env.GEMINI_API_KEY || "")
+        : (process.env[`${c.provider.toUpperCase()}_API_KEY`] || "");
+      const isEnvConfigured = isGemini || Boolean(envKey);
+      const hasKey = Boolean((c.apiKey && c.apiKey.trim().length > 0) || envKey);
+
+      return {
+        ...c,
+        // Hide API key completely for Gemini (secured via .env)
+        apiKey: isGemini ? "" : maskKey(c.apiKey),
+        hasKey,
+        isEnvConfigured,
+      };
+    });
     return NextResponse.json({ configs: safeConfigs });
   } catch (error: any) {
     safeLogger.error("API:AI:Config:GET", error.message, error);
@@ -38,11 +49,14 @@ export async function POST(req: NextRequest) {
 
     // Preserve existing real key if client submitted a masked or empty key
     let resolvedKey = body.apiKey;
-    if (resolvedKey && resolvedKey.includes("••••") && existing) {
-      resolvedKey = existing.apiKey;
+    if (resolvedKey && resolvedKey.includes("••••")) {
+      resolvedKey = existing?.apiKey || "";
     }
     if (!resolvedKey && existing?.apiKey) {
       resolvedKey = existing.apiKey;
+    }
+    if (!resolvedKey && body.provider === "gemini") {
+      resolvedKey = process.env.GEMINI_API_KEY || "";
     }
 
     const updatedConfig: AIProviderConfig = {
@@ -67,8 +81,9 @@ export async function POST(req: NextRequest) {
       success: true,
       config: {
         ...updatedConfig,
-        apiKey: maskKey(updatedConfig.apiKey),
+        apiKey: updatedConfig.provider === "gemini" ? "" : maskKey(updatedConfig.apiKey),
         hasKey: Boolean(updatedConfig.apiKey && updatedConfig.apiKey.trim().length > 0),
+        isEnvConfigured: updatedConfig.provider === "gemini" || Boolean(process.env[`${updatedConfig.provider.toUpperCase()}_API_KEY`]),
       },
     });
   } catch (error: any) {

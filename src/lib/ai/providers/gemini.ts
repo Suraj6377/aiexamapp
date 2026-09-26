@@ -3,9 +3,17 @@ import { AIProvider, GenerateParams } from "./base";
 export class GeminiProvider implements AIProvider {
   name = "gemini";
 
+  private normalizeModel(model?: string): string {
+    if (!model || model === "gemini-2.0-flash" || model === "gemini-1.5-flash" || model === "gemini-2.5-flash") {
+      return "gemini-3.8-flash";
+    }
+    return model;
+  }
+
   async generateText(params: GenerateParams): Promise<string> {
-    const model = params.model || "gemini-2.0-flash";
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${params.apiKey}`;
+    const model = this.normalizeModel(params.model);
+    const apiKey = params.apiKey || process.env.GEMINI_API_KEY || "";
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
     const body: any = {
       contents: [
@@ -54,8 +62,9 @@ export class GeminiProvider implements AIProvider {
 
   async testConnection(params: { apiKey: string; model?: string }): Promise<{ success: boolean; message: string }> {
     try {
-      const model = params.model || "gemini-2.0-flash";
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${params.apiKey}`;
+      const model = this.normalizeModel(params.model);
+      const apiKey = params.apiKey || process.env.GEMINI_API_KEY || "";
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

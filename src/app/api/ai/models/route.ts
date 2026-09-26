@@ -73,12 +73,12 @@ export async function POST(req: NextRequest) {
 
     // 2. Google Gemini Models
     if (provider === "gemini") {
-      if (!apiKey) {
+      if (!resolvedApiKey) {
         return NextResponse.json({ error: "Gemini API key is required" }, { status: 400 });
       }
 
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${resolvedApiKey}`,
         { cache: "no-store" }
       );
 
@@ -117,13 +117,13 @@ export async function POST(req: NextRequest) {
         : "https://api.openai.com/v1")
     ).replace(/\/+$/, "");
 
-    if (!apiKey && provider !== "custom") {
+    if (!resolvedApiKey && provider !== "custom") {
       return NextResponse.json({ error: "API key is required" }, { status: 400 });
     }
 
     const headers: Record<string, string> = {};
-    if (apiKey) {
-      headers["Authorization"] = `Bearer ${apiKey}`;
+    if (resolvedApiKey) {
+      headers["Authorization"] = `Bearer ${resolvedApiKey}`;
     }
 
     const res = await fetch(`${targetBaseUrl}/models`, {

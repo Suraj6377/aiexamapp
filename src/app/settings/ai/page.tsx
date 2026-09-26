@@ -44,10 +44,10 @@ const OPENROUTER_RECOMMENDED = [
 ];
 
 const GEMINI_RECOMMENDED = [
-  { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash", tag: "Next-Gen (Fastest)" },
-  { id: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash-Lite", tag: "Ultra Low Latency" },
-  { id: "gemini-1.5-pro", label: "Gemini 1.5 Pro", tag: "Complex Reasoning" },
-  { id: "gemini-1.5-flash", label: "Gemini 1.5 Flash", tag: "Standard Stable" },
+  { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash", tag: "Next-Gen (Fastest)" },
+  { id: "gemini-flash-latest", label: "Gemini Flash Latest", tag: "Always Latest" },
+  { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro", tag: "Complex Reasoning" },
+  { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash", tag: "High Throughput" },
 ];
 
 const DEFAULT_CONFIGS: AIProviderConfig[] = [
@@ -56,11 +56,13 @@ const DEFAULT_CONFIGS: AIProviderConfig[] = [
     provider: "gemini",
     name: "Google Gemini",
     apiKey: "",
-    model: "gemini-2.0-flash",
+    model: "gemini-3.8-flash",
     temperature: 0.3,
     maxTokens: 8192,
     isDefault: true,
     isActive: true,
+    hasKey: true,
+    isEnvConfigured: true,
   },
   {
     id: "cfg_openrouter",
@@ -149,8 +151,11 @@ export default function AISettingsPage() {
           const data = await res.json();
           const serverConfigs: AIProviderConfig[] = data.configs || [];
           if (Array.isArray(serverConfigs) && serverConfigs.length > 0) {
-            // Merge: preserve local raw unmasked API keys if client entered them
+            // Merge: preserve local raw unmasked API keys if client entered them (except Gemini, which is protected in env)
             const merged = serverConfigs.map((sc) => {
+              if (sc.provider === "gemini") {
+                return { ...sc, apiKey: "", hasKey: true, isEnvConfigured: true };
+              }
               const localMatch = activeList.find((lc) => lc.id === sc.id);
               if (localMatch && localMatch.apiKey && !localMatch.apiKey.includes("••••")) {
                 return { ...sc, apiKey: localMatch.apiKey };
@@ -170,10 +175,14 @@ export default function AISettingsPage() {
         setLoading(false);
       }
 
-      // Preload OpenRouter models if OpenRouter provider exists
+      // Preload models for active providers (OpenRouter & Gemini)
       const openrouterCfg = activeList.find((c) => c.provider === "openrouter");
       if (openrouterCfg) {
         fetchModelsForProvider(openrouterCfg, openrouterCfg.apiKey);
+      }
+      const geminiCfg = activeList.find((c) => c.provider === "gemini");
+      if (geminiCfg) {
+        fetchModelsForProvider(geminiCfg, "");
       }
     }
     loadConfigs();
@@ -181,8 +190,8 @@ export default function AISettingsPage() {
 
   const fetchModelsForProvider = async (config: AIProviderConfig, apiKeyToUse?: string) => {
     const key = apiKeyToUse !== undefined ? apiKeyToUse : config.apiKey;
-    // For providers other than OpenRouter, don't fetch if no API key
-    if (!key && config.provider !== "openrouter" && config.provider !== "custom") {
+    // For providers other than OpenRouter, Gemini (configured in env), and custom, don't fetch if no API key
+    if (!key && config.provider !== "openrouter" && config.provider !== "gemini" && config.provider !== "custom" && !config.isEnvConfigured) {
       return;
     }
 
@@ -434,22 +443,42 @@ export default function AISettingsPage() {
                           <Key className="w-3.5 h-3.5 text-slate-400" />
                           <span>API Key</span>
                         </label>
-                        {config.provider === "openrouter" && (
+                        {config.provider === "gemini" ? (
+                          <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1 bg-emerald-50 dark:bg-emerald-950/60 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800">
+                            <ShieldCheck className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
+                            <span>Saved in .env (Hidden)</span>
+                          </span>
+                        ) : config.provider === "openrouter" ? (
                           <span className="text-[10px] text-slate-400 font-medium">
                             Starts with sk-or-v1-...
                           </span>
-                        )}
+                        ) : null}
                       </div>
-                      <div className="relative">
-                        <input
-                          type="password"
-                          value={config.apiKey}
-                          onChange={(e) => updateConfigField(config.id, { apiKey: e.target.value })}
-                          onBlur={() => fetchModelsForProvider(config)}
-                          placeholder={`Enter your ${config.name} API Key...`}
-                          className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-200 text-xs font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none min-h-[42px]"
-                        />
-                      </div>
+
+                      {config.provider === "gemini" ? (
+                        <div className="flex items-center justify-between px-3.5 py-2.5 rounded-xl border border-emerald-200/80 dark:border-emerald-900/40 bg-emerald-50/50 dark:bg-emerald-950/20 text-slate-700 dark:text-slate-300 min-h-[42px]">
+                          <div className="flex items-center gap-2">
+                            <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                            <span className="text-xs font-medium text-emerald-800 dark:text-emerald-300">
+                              Default Google Studio key is loaded from <code className="font-mono font-bold bg-emerald-100 dark:bg-emerald-900/60 px-1 py-0.5 rounded text-[11px]">.env</code> and hidden
+                            </span>
+                          </div>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 shrink-0">
+                            Secured
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="relative">
+                          <input
+                            type="password"
+                            value={config.apiKey}
+                            onChange={(e) => updateConfigField(config.id, { apiKey: e.target.value })}
+                            onBlur={() => fetchModelsForProvider(config)}
+                            placeholder={`Enter your ${config.name} API Key...`}
+                            className="w-full px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-200 text-xs font-mono focus:ring-2 focus:ring-indigo-500 focus:outline-none min-h-[42px]"
+                          />
+                        </div>
+                      )}
                     </div>
 
                     {/* Model Name & Interactive Combobox */}

@@ -203,6 +203,8 @@ export interface AIProviderConfig {
   maxTokens: number;
   isDefault: boolean;
   isActive: boolean;
+  hasKey?: boolean;
+  isEnvConfigured?: boolean;
 }
 
 export interface ExamTemplate {

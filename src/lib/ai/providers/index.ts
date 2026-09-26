@@ -57,12 +57,20 @@ export class AIProviderRegistry {
     if (!config.provider) {
       return { success: false, message: "No provider selected" };
     }
-    if (!config.apiKey && config.provider !== "custom") {
+    let resolvedKey = config.apiKey || "";
+    if (!resolvedKey || resolvedKey.includes("••••")) {
+      if (config.provider === "gemini") resolvedKey = process.env.GEMINI_API_KEY || "";
+      if (config.provider === "openrouter") resolvedKey = process.env.OPENROUTER_API_KEY || "";
+      if (config.provider === "openai") resolvedKey = process.env.OPENAI_API_KEY || "";
+      if (config.provider === "anthropic") resolvedKey = process.env.ANTHROPIC_API_KEY || "";
+      if (config.provider === "groq") resolvedKey = process.env.GROQ_API_KEY || "";
+    }
+    if (!resolvedKey && config.provider !== "custom") {
       return { success: false, message: "API key is required" };
     }
     const provider = this.getProvider(config.provider as AIProviderName);
     return provider.testConnection({
-      apiKey: config.apiKey || "",
+      apiKey: resolvedKey,
       baseUrl: config.baseUrl,
       model: config.model,
     });
